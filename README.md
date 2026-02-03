@@ -120,11 +120,11 @@ Later-generation games—especially those relying on **split-screen scrolling** 
   https://platformio.org/install/ide?install=vscode
 - ESP32-S3 USB 驱动（大多数系统会自动安装）
 
-> ⚠️ **No additional libraries are required.**  
-> All dependencies (including **LovyanGFX**) are already included in this repository.
+> > ⚠️ **无需手动安装第三方库**  
+> 本项目使用 PlatformIO 管理依赖。所有所需库（包括 **LovyanGFX**）将在首次编译时由 PlatformIO 自动下载。
 >
-> ⚠️ **无需额外安装第三方库**  
-> 所有依赖（包括 **LovyanGFX**）均已随项目一同提供。
+> ⚠️ **No manual third-party library installation required**  
+> This project uses PlatformIO for dependency management. All required libraries (including **LovyanGFX**) will be automatically downloaded by PlatformIO during the first build.
 
 ---
 
