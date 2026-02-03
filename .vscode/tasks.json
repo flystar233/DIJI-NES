@@ -1,0 +1,120 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PlatformIO: Build (NES_Clean)",
+            "type": "shell",
+            "command": "~/.platformio/penv/bin/platformio",
+            "args": [
+                "run",
+                "-d",
+                "/Users/evanimac/Work/C Language/ESP32/ESP32_NES_Clean"
+            ],
+            "options": {
+                "cwd": "/Users/evanimac/Work/C Language/ESP32/ESP32_NES_Clean"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$platformio",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "PlatformIO: Upload (NES_Clean)",
+            "type": "shell",
+            "command": "~/.platformio/penv/bin/platformio",
+            "args": [
+                "run",
+                "--target",
+                "upload",
+                "-d",
+                "/Users/evanimac/Work/C Language/ESP32/ESP32_NES_Clean",
+                "--upload-port",
+                "/dev/cu.wchusbserial5A4E1110481"
+            ],
+            "options": {
+                "cwd": "/Users/evanimac/Work/C Language/ESP32/ESP32_NES_Clean"
+            },
+            "group": {
+                "kind": "build"
+            },
+            "problemMatcher": "$platformio",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "PlatformIO: Monitor (NES_Clean)",
+            "type": "shell",
+            "command": "~/.platformio/penv/bin/platformio",
+            "args": [
+                "device",
+                "monitor",
+                "--port",
+                "/dev/cu.wchusbserial5A4E1110481",
+                "--baud",
+                "115200"
+            ],
+            "options": {
+                "cwd": "/Users/evanimac/Work/C Language/ESP32/ESP32_NES_Clean"
+            },
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": ".*",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^--- Quit",
+                    "endsPattern": "^--- Quit"
+                }
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Build & Upload (NES_Clean)",
+            "type": "shell",
+            "command": "~/.platformio/penv/bin/platformio",
+            "args": [
+                "run",
+                "--target",
+                "upload",
+                "-d",
+                "/Users/evanimac/Work/C Language/ESP32/ESP32_NES_Clean",
+                "--upload-port",
+                "/dev/cu.wchusbserial5A4E1110481"
+            ],
+            "options": {
+                "cwd": "/Users/evanimac/Work/C Language/ESP32/ESP32_NES_Clean"
+            },
+            "group": {
+                "kind": "build"
+            },
+            "problemMatcher": "$platformio",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "dependsOn": []
+        }
+    ]
+}
