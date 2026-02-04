@@ -110,6 +110,15 @@ Later-generation games—especially those relying on **split-screen scrolling** 
 ### TFT 显示屏
 详见 [lgfx_conf.h](src/lgfx_conf.h) (LovyanGFX 配置)。
 
+⚠️ 注意 / Note
+部分 TFT 显示屏需要在该文件中启用 颜色反转（invert） 设置，否则可能出现 颜色反了、发白或对比度异常 的情况。
+如遇此问题，请在 lgfx_conf.h 中尝试修改：cfg.invert = true;
+
+Some TFT displays require color inversion (invert) to be enabled in this file.
+Otherwise, issues such as inverted colors, washed-out colors, or incorrect contrast may occur.
+If you encounter these problems, try modifying the following setting in lgfx_conf.h: cfg.invert = true;
+
+
 ---
 
 ## 🚀 Build & Upload / 编译与上传
