@@ -68,6 +68,16 @@ public:
         endY = y + height;
     }
     
+    // 获取 Sprite 0 的 X 范围 (用于优化跳帧检测)
+    void getSprite0XRange(int& startX, int& endX) const {
+        startX = oam[3];
+        endX = startX + 8;
+    }
+    
+    // 轻量级 Sprite 0 Hit 检测 (只检测 Sprite 0 覆盖区域，不渲染)
+    // 返回 true 表示发生了 hit
+    bool IRAM_ATTR checkSprite0HitFast(int scanline);
+    
     // 跳帧时的帧初始化（加载调色板缓存和初始化滚动寄存器）
     void IRAM_ATTR initFrameForSprite0Check() {
         loadPaletteCache();
@@ -75,6 +85,9 @@ public:
             vramAddr = tempAddr;
         }
     }
+    
+    // 跳帧时更新一条扫描线的 Y 滚动 (不渲染, 只维护 vramAddr)
+    void IRAM_ATTR skipScanlineForScrollUpdate();
     
     // ========== NMI 接口 (用于精确时序) ==========
     bool IRAM_ATTR isNmiPending() const { return nmiPending; }

@@ -405,6 +405,155 @@ void IRAM_ATTR PPU::incrementY() {
     vramAddr = (vramAddr & ~0x03E0) | (coarseY << 5);
 }
 
+/**
+ * 跳帧时更新一条扫描线的 Y 滚动 (不渲染)
+ * 仅维护 vramAddr，保持 PPU 状态同步
+ */
+void IRAM_ATTR PPU::skipScanlineForScrollUpdate() {
+    // 每条扫描线开始时，同步 coarse X
+    if ((ppuMask & 0x18) != 0) {
+        vramAddr = (vramAddr & ~0x041F) | (tempAddr & 0x041F);
+    }
+    // 扫描线结束时递增 Y
+    incrementY();
+}
+
+/**
+ * 轻量级 Sprite 0 Hit 检测 (只检测 Sprite 0 覆盖区域)
+ * 
+ * @param scanline 扫描线号 (0-239)
+ * @return true 如果发生了 Hit
+ * 
+ * 优化策略:
+ *   - 只读取 Sprite 0 覆盖的 1-2 个背景 tile
+ *   - 只检测 Sprite 0 的 8 个像素
+ *   - 不填充完整的 bgPixelOpacity 数组
+ *   - 比完整 renderLine(nullptr) 快 10-20 倍
+ */
+bool IRAM_ATTR PPU::checkSprite0HitFast(int scanline) {
+    // 如果已经 hit 了，不需要再检测
+    if (ppuStatus & 0x40) return true;
+    
+    // 检查背景和精灵是否都启用
+    if ((ppuMask & 0x18) != 0x18) return false;
+    
+    // 获取 Sprite 0 信息
+    uint8_t sprite0Y = oam[0];
+    uint8_t sprite0Tile = oam[1];
+    uint8_t sprite0Attr = oam[2];
+    uint8_t sprite0X = oam[3];
+    
+    // Sprite 0 不在屏幕上
+    if (sprite0Y >= 0xEF) return false;
+    
+    // Sprite Y 坐标需要 +1 (OAM 存储的是 Y-1)
+    int spriteY = sprite0Y + 1;
+    
+    // 8x16 模式?
+    bool is8x16 = (ppuCtrl & 0x20) != 0;
+    int spriteHeight = is8x16 ? 16 : 8;
+    
+    // 检查 Sprite 0 是否在当前扫描线上
+    if (scanline < spriteY || scanline >= spriteY + spriteHeight) return false;
+    
+    // X=255 时不产生 hit
+    if (sprite0X >= 255) return false;
+    
+    // 左 8 像素被遮蔽时检测范围
+    int startCheckX = sprite0X;
+    int endCheckX = sprite0X + 8;
+    if (startCheckX < 8 && !(ppuMask & 0x06)) {
+        startCheckX = 8;
+    }
+    if (endCheckX > 255) endCheckX = 255;
+    if (startCheckX >= endCheckX) return false;
+    
+    // ========== 读取 Sprite 0 Pattern ==========
+    int spriteRow = scanline - spriteY;
+    bool flipV = (sprite0Attr & 0x80) != 0;
+    bool flipH = (sprite0Attr & 0x40) != 0;
+    int patternRow = flipV ? (spriteHeight - 1 - spriteRow) : spriteRow;
+    
+    uint16_t spPatternBase = (ppuCtrl & 0x08) ? 0x1000 : 0x0000;
+    uint16_t spTileAddr;
+    
+    if (is8x16) {
+        uint16_t base = (sprite0Tile & 0x01) ? 0x1000 : 0x0000;
+        uint8_t tile = sprite0Tile & 0xFE;
+        if (patternRow >= 8) {
+            tile++;
+            patternRow -= 8;
+        }
+        spTileAddr = base + tile * 16 + patternRow;
+    } else {
+        spTileAddr = spPatternBase + sprite0Tile * 16 + patternRow;
+    }
+    
+    uint8_t spPatLo = fastChrRead(spTileAddr);
+    uint8_t spPatHi = fastChrRead(spTileAddr + 8);
+    
+    // 如果精灵这行全透明，不可能 hit
+    if ((spPatLo | spPatHi) == 0) return false;
+    
+    // 预计算精灵像素
+    uint8_t spPixels[8];
+    if (flipH) {
+        for (int i = 0; i < 8; i++) {
+            spPixels[i] = ((spPatLo >> i) & 1) | (((spPatHi >> i) & 1) << 1);
+        }
+    } else {
+        for (int i = 0; i < 8; i++) {
+            spPixels[i] = ((spPatLo >> (7 - i)) & 1) | (((spPatHi >> (7 - i)) & 1) << 1);
+        }
+    }
+    
+    // ========== 读取背景 Pattern (只读取 Sprite 0 覆盖的区域) ==========
+    uint16_t bgPatternBase = (ppuCtrl & 0x10) ? 0x1000 : 0x0000;
+    int coarseX = vramAddr & 0x001F;
+    int coarseY = (vramAddr >> 5) & 0x1F;
+    int fineYOffset = (vramAddr >> 12) & 0x07;
+    int baseNt = (vramAddr >> 10) & 0x03;
+    
+    // 检测每个精灵像素
+    for (int bit = 0; bit < 8; bit++) {
+        int sx = sprite0X + bit;
+        if (sx < startCheckX || sx >= endCheckX) continue;
+        if (spPixels[bit] == 0) continue;  // 精灵透明
+        
+        // 计算这个屏幕X对应的背景tile
+        int bgPixelX = sx + fineX;
+        int bgTileX = coarseX + (bgPixelX >> 3);
+        int nt = baseNt;
+        if (bgTileX >= 32) {
+            bgTileX -= 32;
+            nt ^= 1;
+        }
+        int tileFineX = bgPixelX & 0x07;
+        
+        // 读取背景 tile
+        uint16_t ntBase = 0x2000 + (nt * 0x400);
+        uint16_t ntAddr = ntBase + coarseY * 32 + bgTileX;
+        uint8_t tileIndex = fastVramRead(ntAddr);
+        
+        // 读取背景 pattern
+        uint16_t bgPatAddr = bgPatternBase + tileIndex * 16 + fineYOffset;
+        uint8_t bgPatLo = fastChrRead(bgPatAddr);
+        uint8_t bgPatHi = fastChrRead(bgPatAddr + 8);
+        
+        // 计算这个像素的背景颜色
+        int shift = 7 - tileFineX;
+        uint8_t bgPx = ((bgPatLo >> shift) & 1) | (((bgPatHi >> shift) & 1) << 1);
+        
+        // 背景非透明 + 精灵非透明 = Hit!
+        if (bgPx != 0) {
+            ppuStatus |= 0x40;
+            return true;
+        }
+    }
+    
+    return false;
+}
+
 // ============================================================================
 // 逐行扫描渲染 (Phase 1 优化 + Tile 级别加速)
 // ============================================================================

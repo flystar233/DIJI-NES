@@ -15,7 +15,7 @@
 
 // 串口调试开关
 #ifndef ENABLE_DEBUG_SERIAL
-#define ENABLE_DEBUG_SERIAL true
+#define ENABLE_DEBUG_SERIAL false
 #endif
 
 // ================ 菜单颜色配置 (高级灰色调) ================

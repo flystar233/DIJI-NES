@@ -195,10 +195,9 @@ void IRAM_ATTR NES::clock() {
         // 跳帧 + 背景和精灵都启用，需要检测 Sprite 0 Hit
         ppu.getSprite0YRange(sprite0StartY, sprite0EndY);
         // 只有 Sprite 0 在可见区域内才需要检测
-        needSprite0Check = (sprite0StartY < 240 && sprite0EndY > 0);
+        needSprite0Check = (sprite0StartY >= 0 && sprite0StartY < 240 && sprite0EndY > 0);
         
         // 关键：跳帧时必须初始化 PPU 帧状态（调色板缓存 + vramAddr）
-        // 否则背景像素位置错误，Sprite 0 Hit 检测会失败
         if (needSprite0Check) {
             ppu.initFrameForSprite0Check();
         }
@@ -206,31 +205,40 @@ void IRAM_ATTR NES::clock() {
     
     // 可见扫描线 0-239 (每 3 行一组)
     for (int scanline = 0; scanline < 240; scanline += 3) {
-        // 行 0: 渲染 + 113 CPU 周期
+        // 行 0
         if (!skipRender && ppu.renderEnabled) {
             ppu.renderLine(scanline, ppu.frameBuffer + scanline * 256);
-        } else if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
-                   scanline >= sprite0StartY && scanline < sprite0EndY) {
-            // 跳帧模式：只在 Sprite 0 覆盖的扫描线检测 Hit
-            ppu.renderLine(scanline, nullptr);
+        } else if (skipRender) {
+            // 跳帧模式：轻量级 Sprite 0 Hit 检测 + Y 滚动更新
+            if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
+                scanline >= sprite0StartY && scanline < sprite0EndY) {
+                ppu.checkSprite0HitFast(scanline);
+            }
+            ppu.skipScanlineForScrollUpdate();
         }
         cpu.clock(113);
         
-        // 行 1: 渲染 + 114 CPU 周期
+        // 行 1
         if (!skipRender && ppu.renderEnabled) {
             ppu.renderLine(scanline + 1, ppu.frameBuffer + (scanline + 1) * 256);
-        } else if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
-                   (scanline + 1) >= sprite0StartY && (scanline + 1) < sprite0EndY) {
-            ppu.renderLine(scanline + 1, nullptr);
+        } else if (skipRender) {
+            if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
+                (scanline + 1) >= sprite0StartY && (scanline + 1) < sprite0EndY) {
+                ppu.checkSprite0HitFast(scanline + 1);
+            }
+            ppu.skipScanlineForScrollUpdate();
         }
         cpu.clock(114);
         
-        // 行 2: 渲染 + 114 CPU 周期
+        // 行 2
         if (!skipRender && ppu.renderEnabled) {
             ppu.renderLine(scanline + 2, ppu.frameBuffer + (scanline + 2) * 256);
-        } else if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
-                   (scanline + 2) >= sprite0StartY && (scanline + 2) < sprite0EndY) {
-            ppu.renderLine(scanline + 2, nullptr);
+        } else if (skipRender) {
+            if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
+                (scanline + 2) >= sprite0StartY && (scanline + 2) < sprite0EndY) {
+                ppu.checkSprite0HitFast(scanline + 2);
+            }
+            ppu.skipScanlineForScrollUpdate();
         }
         cpu.clock(114);
     }
