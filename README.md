@@ -154,28 +154,73 @@ If you encounter these problems, try modifying the following setting in lgfx_con
 
 ---
 
-### 🛠 常见问题排查
+### 🛠 常见问题排查 / Troubleshooting
 
 **PlatformIO 卡在 “Resolving dependencies…”**
 
-如果 PlatformIO 在配置项目或解析依赖时卡住，通常是由于 PlatformIO 本地环境损坏或权限异常导致的。
+如果 PlatformIO 在配置项目或解析依赖时卡住，通常是由于 PlatformIO 本地环境损坏、缓存问题或权限异常导致的。
+可按下列步骤排查：
 
-可以尝试删除 PlatformIO 的本地目录，并重新打开 VS Code：
-
-
-**PlatformIO stuck at "Resolving dependencies..."**
-
-If PlatformIO gets stuck while configuring the project or resolving dependencies, this is usually caused by a corrupted or permission-broken PlatformIO environment.
-
-Try removing the PlatformIO home directory and restart VS Code:
-
+- 备份并删除 PlatformIO 主目录（将触发依赖重下载）：
 
 ```bash
 rm -rf ~/.platformio
+```
+
+- 检查并修复目录权限（如果删除失败或出现权限错误）：
+
+```bash
+sudo chown -R $(whoami) ~/.platformio
+```
+
+- 在终端中验证 PlatformIO 可用并更新元数据：
+
+```bash
+platformio update
+platformio upgrade
+```
+
+- 重新启动 VS Code，必要时重新安装 PlatformIO 扩展。
+
+如果问题仍然存在，参考 PlatformIO 官方文档或查看 VS Code 输出面板中的 PlatformIO 日志以获取详细错误信息。
+
+**PlatformIO stuck at "Resolving dependencies..."**
+
+If PlatformIO gets stuck while configuring the project or resolving dependencies, it is often caused by a corrupted cache, permission issues, or a broken local PlatformIO environment.
+Try the steps below:
+
+- Backup and remove the PlatformIO home directory (this forces re-downloading dependencies):
+
+```bash
+rm -rf ~/.platformio
+```
+
+- Fix ownership/permissions if deletion or access fails:
+
+```bash
+sudo chown -R $(whoami) ~/.platformio
+```
+
+- Update PlatformIO core and metadata:
+
+```bash
+platformio update
+platformio upgrade
+```
+
+- Restart VS Code and, if needed, reinstall the PlatformIO extension.
+
+If the issue persists, check the PlatformIO output/logs in VS Code for error details and consult the PlatformIO docs.
 
 ---
 
 ## 🎮 使用方法 / Usage
+
+注意：本项目不包含、提供或分发任何游戏 ROM。所有 ROM 均为版权所有，属于各自权利人。
+本项目仅供技术学习与研究使用。作者不对用户如何获取或使用 ROM 文件承担任何责任。
+
+This project does NOT include, provide, or distribute any game ROMs. All ROMs are copyrighted and remain the property of their respective owners.
+This project is intended solely for technical learning and research. The author assumes no responsibility for how users obtain or use ROM files.
 
 1. **准备 ROM 文件**: 将 `.nes` ROM 文件复制到 SD 卡根目录
 2. **插入 SD 卡**
