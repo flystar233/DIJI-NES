@@ -235,6 +235,12 @@ private:
     bool sprite0Rendered = false;     // Sprite 0 是否已渲染到当前扫描线
     uint8_t bgPixelOpacity[256];      // 当前扫描线背景像素不透明度 (用于精确 Sprite 0 hit)
     
+    // ========== OAM 预评估缓存 (消除每行 64 精灵扫描) ==========
+    static const int MAX_SPRITES_PER_LINE = 8;
+    uint8_t spriteIndicesPerLine[240][MAX_SPRITES_PER_LINE];
+    uint8_t spriteCountPerLine[240];
+    void IRAM_ATTR evaluateOAM();
+    
     // ========== 渲染滚动快照 ==========
     // 在帧开始时保存滚动状态，用于事后渲染
     uint16_t savedScrollAddr = 0;     // 帧开始时的 tempAddr 快照

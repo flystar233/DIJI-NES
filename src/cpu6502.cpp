@@ -2,15 +2,12 @@
 #include "nes.h"
 
 // Anemoia 风格批量执行：执行指定数量的 CPU 周期
-// 这是性能关键函数，使用 cycles 成员变量跟踪剩余周期
+// 优化: 直接用 cycles 做差值，消除空转循环
+// 原版每次 clock(113) 循环 113 次（~75 次空转），优化后只循环 ~38 次
 void IRAM_ATTR CPU6502::clock(int targetCycles) {
-    for (int remaining = targetCycles; remaining > 0; remaining--) {
-        if (cycles > 0) { 
-            cycles--; 
-            continue; 
-        }
-        
-        cycles = step() - 1;  // step() 返回周期数，减1因为当前周期已消耗
+    cycles -= targetCycles;
+    while (cycles < 0) {
+        cycles += step();
     }
 }
 
@@ -50,7 +47,7 @@ void IRAM_ATTR CPU6502::nmi() {
     uint8_t lo = bus->cpuRead(0xFFFA);
     uint8_t hi = bus->cpuRead(0xFFFB);
     PC = (hi << 8) | lo;
-    cycles = 7;  // NMI 需要 7 个周期
+    cycles += 7;  // NMI 需要 7 个周期 (保留前一条指令的剩余周期)
 }
 
 void IRAM_ATTR CPU6502::irq() {
@@ -64,7 +61,7 @@ void IRAM_ATTR CPU6502::irq() {
     uint8_t lo = bus->cpuRead(0xFFFE);
     uint8_t hi = bus->cpuRead(0xFFFF);
     PC = (hi << 8) | lo;
-    cycles = 7;  // IRQ 需要 7 个周期
+    cycles += 7;  // IRQ 需要 7 个周期 (保留前一条指令的剩余周期)
 }
 
 uint8_t IRAM_ATTR CPU6502::fetch() {

@@ -76,7 +76,7 @@ public:
       cfg.freq_write = 80000000;    // 发送时的SPI时钟（最大80MHz，四舍五入为80MHz的整数）。
       cfg.freq_read  = 6000000;    // 接收时的SPI时钟
       cfg.spi_3wire  = true;        // 如果用MOSI引脚进行接收，则设置为true
-      cfg.use_lock   = true;        //如果使用交易锁则设置为true
+      cfg.use_lock   = false;        //如果使用交易锁则设置为true
       cfg.dma_channel = SPI_DMA_CH_AUTO; // 设置要使用的DMA通道（0=不使用DMA/1=1ch/2=ch/SPI_DMA_CH_AUTO=auto设置）。
       // *随着ESP-IDF版本的升级，现在推荐使用SPI_DMA_CH_AUTO（自动设置）作为DMA通道，1ch和2ch被弃用。
       cfg.pin_sclk = 14;            // 设置SPI SCLK引脚编号

@@ -1,13 +1,13 @@
 #include "cartridge.h"
 #include "nes.h"
 
-// Temporary MMC3 debug counters (set to 9999 to disable debug output)
-static int mmc3DebugEvents = 9999;
-
 Cartridge::Cartridge() : prg(nullptr), chr(nullptr), prgSize(0), chrSize(0), prgBankSelect(0) {
     memset(chrRam, 0, sizeof(chrRam));
     memset(sram, 0, sizeof(sram));
+    memset(chrBankPtrs, 0, sizeof(chrBankPtrs));
     chrWindow = chrRam;  // 默认使用 CHR RAM
+    prgBank2Offset = 0;
+    prgBank3Offset = 0;
     // 初始化 MMC3 状态，避免未定义的 mmc3PrevA12 导致首帧误判
     mmc3PrevA12 = false;
     mmc3IrqPending = false;
@@ -57,7 +57,19 @@ bool Cartridge::load(const char* path) {
     hasBattery = (flags6 & 0x02) != 0;
     bool hasTrainer = (flags6 & 0x04) != 0;
     
-    mapper = ((flags6 >> 4) & 0x0F) | (flags7 & 0xF0);
+    // 检测 iNES 脏头 (盗版/非官方 ROM 的 bytes 8-15 常有垃圾数据)
+    // 如果 bytes 8-15 非零，只使用 flags6 的高半字节作为 mapper 低位
+    bool dirtyHeader = false;
+    for (int i = 8; i < 16; i++) {
+        if (header[i] != 0) { dirtyHeader = true; break; }
+    }
+    
+    if (dirtyHeader) {
+        mapper = (flags6 >> 4) & 0x0F;
+        Serial.println("  NOTE: Dirty iNES header detected, using low nibble mapper only");
+    } else {
+        mapper = ((flags6 >> 4) & 0x0F) | (flags7 & 0xF0);
+    }
 
     Serial.println("=== Cartridge Info ===");
     Serial.printf("  PRG ROM: %d x 16KB = %dKB\n", prgBanks, prgBanks * 16);
@@ -173,6 +185,7 @@ bool Cartridge::load(const char* path) {
     mmc3IrqPending = false;
     
     updateBankCache();
+    updateNtPtrs();
 
     f.close();
     Serial.println("======================\n");
@@ -187,6 +200,9 @@ void Cartridge::updateBankCache() {
     if (!prg || prgSize < 0x4000) {
         prgBank0Offset = 0;
         prgBank1Offset = 0;
+        prgBank2Offset = 0;
+        prgBank3Offset = 0;
+        updateChrBankCache();
         return;
     }
     
@@ -215,6 +231,9 @@ void Cartridge::updateBankCache() {
             updateMmc3Banks();
             break;
     }
+    
+    // 更新 CHR bank 指针缓存
+    updateChrBankCache();
 }
 
 void Cartridge::updateMmc1Banks() {
@@ -225,6 +244,7 @@ void Cartridge::updateMmc1Banks() {
         case 2: mirrorVertical = true;  break;  // 垂直镜像
         case 3: mirrorVertical = false; break;  // 水平镜像
     }
+    updateNtPtrs();
     
     // PRG 模式
     uint8_t prgMode = (mmc1Control >> 2) & 0x03;
@@ -254,24 +274,113 @@ void Cartridge::updateMmc1Banks() {
     if (prgBank1Offset >= prgSize) prgBank1Offset = prgSize - 0x4000;
 }
 void Cartridge::updateMmc3Banks() {
-    // MMC3 镜像由 $A000 控制 (在 cpuWrite 中处理)
-    
-    // PRG bank 计算
-    uint8_t prg0 = mmc3Banks[6] & (prgBanks * 2 - 1);
-    uint8_t prg1 = mmc3Banks[7] & (prgBanks * 2 - 1);
-    uint8_t prgLast = prgBanks * 2 - 1;
-    uint8_t prgSecondLast = prgBanks * 2 - 2;
+    // MMC3: 预计算 4 个 8KB PRG bank 偏移量
+    uint8_t prgMask = prgBanks * 2 - 1;
+    uint8_t prg0 = mmc3Banks[6] & prgMask;
+    uint8_t prg1 = mmc3Banks[7] & prgMask;
+    uint8_t prgSecondLast = (prgBanks * 2 - 2) & prgMask;
+    uint8_t prgLast = prgMask;
     
     if (mmc3PrgMode) {
-        // 模式 1: $C000 可切换, $8000 固定倒数第二
+        // 模式 1: $8000=倒数第二, $C000=R6可切换
         prgBank0Offset = (uint32_t)prgSecondLast * 0x2000;
-        // 注意: MMC3 使用 8KB PRG banks
+        prgBank2Offset = (uint32_t)prg0 * 0x2000;
     } else {
-        // 模式 0: $8000 可切换, $C000 固定倒数第二
+        // 模式 0: $8000=R6可切换, $C000=倒数第二
         prgBank0Offset = (uint32_t)prg0 * 0x2000;
+        prgBank2Offset = (uint32_t)prgSecondLast * 0x2000;
+    }
+    prgBank1Offset = (uint32_t)prg1 * 0x2000;
+    prgBank3Offset = (uint32_t)prgLast * 0x2000;
+}
+
+// ============================================================================
+// CHR Bank Pointer Cache Update
+// ============================================================================
+
+void Cartridge::updateChrBankCache() {
+    // CHR RAM 情况 (无 CHR ROM)
+    if (!chr || chrBanks == 0) {
+        for (int i = 0; i < 8; i++) {
+            chrBankPtrs[i] = chrRam + (i * 0x400);
+        }
+        return;
     }
     
-    prgBank1Offset = (uint32_t)prg1 * 0x2000;
+    switch (mapper) {
+        case 4: {
+            // MMC3: 8 个独立的 1KB CHR bank
+            uint8_t chrMask = chrBanks * 8 - 1;
+            uint8_t banks[8];
+            
+            if (mmc3ChrMode) {
+                // 模式 1: 1KB banks 在 $0000-$0FFF, 2KB banks 在 $1000-$1FFF
+                banks[0] = mmc3Banks[2];
+                banks[1] = mmc3Banks[3];
+                banks[2] = mmc3Banks[4];
+                banks[3] = mmc3Banks[5];
+                banks[4] = mmc3Banks[0] & 0xFE;
+                banks[5] = (mmc3Banks[0] & 0xFE) + 1;
+                banks[6] = mmc3Banks[1] & 0xFE;
+                banks[7] = (mmc3Banks[1] & 0xFE) + 1;
+            } else {
+                // 模式 0: 2KB banks 在 $0000-$0FFF, 1KB banks 在 $1000-$1FFF
+                banks[0] = mmc3Banks[0] & 0xFE;
+                banks[1] = (mmc3Banks[0] & 0xFE) + 1;
+                banks[2] = mmc3Banks[1] & 0xFE;
+                banks[3] = (mmc3Banks[1] & 0xFE) + 1;
+                banks[4] = mmc3Banks[2];
+                banks[5] = mmc3Banks[3];
+                banks[6] = mmc3Banks[4];
+                banks[7] = mmc3Banks[5];
+            }
+            
+            for (int i = 0; i < 8; i++) {
+                uint32_t offset = (uint32_t)(banks[i] & chrMask) * 0x400;
+                if (offset >= chrSize) offset %= chrSize;
+                chrBankPtrs[i] = chr + offset;
+            }
+            break;
+        }
+        
+        case 1: {
+            // MMC1: 4KB 或 8KB CHR bank 模式
+            bool chr8kMode = (mmc1Control & 0x10) == 0;
+            
+            if (chr8kMode) {
+                uint32_t base = (uint32_t)(mmc1ChrBank0 >> 1) * 0x2000;
+                if (base >= chrSize) base %= chrSize;
+                for (int i = 0; i < 8; i++) {
+                    uint32_t offset = base + i * 0x400;
+                    if (offset >= chrSize) offset %= chrSize;
+                    chrBankPtrs[i] = chr + offset;
+                }
+            } else {
+                uint32_t base0 = (uint32_t)mmc1ChrBank0 * 0x1000;
+                uint32_t base1 = (uint32_t)mmc1ChrBank1 * 0x1000;
+                if (base0 >= chrSize) base0 %= chrSize;
+                if (base1 >= chrSize) base1 %= chrSize;
+                for (int i = 0; i < 4; i++) {
+                    uint32_t off0 = base0 + i * 0x400;
+                    uint32_t off1 = base1 + i * 0x400;
+                    if (off0 >= chrSize) off0 %= chrSize;
+                    if (off1 >= chrSize) off1 %= chrSize;
+                    chrBankPtrs[i] = chr + off0;
+                    chrBankPtrs[i + 4] = chr + off1;
+                }
+            }
+            break;
+        }
+        
+        default: {
+            // Mapper 0, 2, 3: 使用 chrWindow 直接映射
+            uint8_t* base = chrWindow ? chrWindow : chr;
+            for (int i = 0; i < 8; i++) {
+                chrBankPtrs[i] = base + (i * 0x400);
+            }
+            break;
+        }
+    }
 }
 
 // ============================================================================
@@ -303,18 +412,13 @@ uint8_t IRAM_ATTR Cartridge::cpuRead(uint16_t addr) {
 }
 
 
-uint8_t Cartridge::cpuReadMapper0(uint16_t addr) {
-    // NROM: 16KB 或 32KB
-    uint32_t prgAddr;
-    if (prgSize <= 0x4000) {
-        prgAddr = (addr - 0x8000) & 0x3FFF;
-    } else {
-        prgAddr = (addr - 0x8000) & 0x7FFF;
-    }
-    return prg[prgAddr];
+uint8_t IRAM_ATTR Cartridge::cpuReadMapper0(uint16_t addr) {
+    // NROM: 使用预算的 bank 偏移量，消除运行时 prgSize 比较
+    uint32_t base = (addr < 0xC000) ? prgBank0Offset : prgBank1Offset;
+    return prg[base + (addr & 0x3FFF)];
 }
 
-uint8_t Cartridge::cpuReadMapper1(uint16_t addr) {
+uint8_t IRAM_ATTR Cartridge::cpuReadMapper1(uint16_t addr) {
     // MMC1
     if (addr < 0xC000) {
         uint32_t idx = prgBank0Offset + (addr - 0x8000);
@@ -327,7 +431,7 @@ uint8_t Cartridge::cpuReadMapper1(uint16_t addr) {
     }
 }
 
-uint8_t Cartridge::cpuReadMapper2(uint16_t addr) {
+uint8_t IRAM_ATTR Cartridge::cpuReadMapper2(uint16_t addr) {
     // UxROM: Hot path
     uint32_t base = (addr < 0xC000) ? prgBank0Offset : prgBank1Offset;
     uint32_t off  = (addr < 0xC000) ? (uint32_t)(addr - 0x8000) : (uint32_t)(addr - 0xC000);
@@ -336,52 +440,20 @@ uint8_t Cartridge::cpuReadMapper2(uint16_t addr) {
     return prg[idx];
 }
 
-uint8_t Cartridge::cpuReadMapper3(uint16_t addr) {
-    // CNROM: 与 NROM 相同的 PRG 布局
-    uint32_t prgAddr;
-    if (prgSize <= 0x4000) {
-        prgAddr = (addr - 0x8000) & 0x3FFF;
-    } else {
-        prgAddr = (addr - 0x8000) & 0x7FFF;
-    }
-    return prg[prgAddr];
+uint8_t IRAM_ATTR Cartridge::cpuReadMapper3(uint16_t addr) {
+    // CNROM: PRG 布局同 NROM，使用预算偏移量
+    uint32_t base = (addr < 0xC000) ? prgBank0Offset : prgBank1Offset;
+    return prg[base + (addr & 0x3FFF)];
 }
 
-uint8_t Cartridge::cpuReadMapper4(uint16_t addr) {
-    // MMC3: 4 个 8KB banks
-    uint8_t bank;
-    uint16_t offset;
-    
-    if (addr < 0xA000) {
-        // $8000-$9FFF
-        if (mmc3PrgMode) {
-            bank = prgBanks * 2 - 2;  // 倒数第二个 8KB bank
-        } else {
-            bank = mmc3Banks[6];
-        }
-        offset = addr - 0x8000;
-    } else if (addr < 0xC000) {
-        // $A000-$BFFF
-        bank = mmc3Banks[7];
-        offset = addr - 0xA000;
-    } else if (addr < 0xE000) {
-        // $C000-$DFFF
-        if (mmc3PrgMode) {
-            bank = mmc3Banks[6];
-        } else {
-            bank = prgBanks * 2 - 2;  // 倒数第二个
-        }
-        offset = addr - 0xC000;
-    } else {
-        // $E000-$FFFF
-        bank = prgBanks * 2 - 1;  // 最后一个 8KB bank
-        offset = addr - 0xE000;
-    }
-    
-    bank &= (prgBanks * 2 - 1);
-    uint32_t idx = (uint32_t)bank * 0x2000 + offset;
-    if (idx >= prgSize) idx %= prgSize;
-    return prg[idx];
+uint8_t IRAM_ATTR Cartridge::cpuReadMapper4(uint16_t addr) {
+    // MMC3: 使用预计算的 4 个 8KB bank 偏移量，避免运行时分支和乘法
+    uint32_t base;
+    if (addr < 0xA000)      base = prgBank0Offset;
+    else if (addr < 0xC000) base = prgBank1Offset;
+    else if (addr < 0xE000) base = prgBank2Offset;
+    else                     base = prgBank3Offset;
+    return prg[base + (addr & 0x1FFF)];
 }
 
 // ============================================================================
@@ -463,6 +535,7 @@ void Cartridge::cpuWriteMapper3(uint16_t addr, uint8_t val) {
             chrWindow = chr + offset;
         }
     }
+    updateChrBankCache();  // 同步 chrBankPtrs
 }
 
 void Cartridge::cpuWriteMapper4(uint16_t addr, uint8_t val) {
@@ -473,21 +546,12 @@ void Cartridge::cpuWriteMapper4(uint16_t addr, uint8_t val) {
             uint8_t reg = mmc3BankSelect & 0x07;
             mmc3Banks[reg] = val;
             updateBankCache();
-            if (mmc3DebugEvents < 80) {
-                Serial.printf("MMC3 WRITE $8001 reg=%d val=0x%02X banks[0]=0x%02X banks[1]=0x%02X banks[2]=0x%02X banks[3]=0x%02X\n",
-                              reg, val, mmc3Banks[0], mmc3Banks[1], mmc3Banks[2], mmc3Banks[3]);
-                mmc3DebugEvents++;
-            }
         } else {
             // $8000: Bank select
             mmc3BankSelect = val;
             mmc3PrgMode = (val & 0x40) != 0;
             mmc3ChrMode = (val & 0x80) != 0;
             updateBankCache();
-            if (mmc3DebugEvents < 80) {
-                Serial.printf("MMC3 WRITE $8000 bankSelect=0x%02X prgMode=%d chrMode=%d\n", mmc3BankSelect, mmc3PrgMode, mmc3ChrMode);
-                mmc3DebugEvents++;
-            }
         }
     } else if (addr < 0xC000) {
         if (addr & 1) {
@@ -495,10 +559,13 @@ void Cartridge::cpuWriteMapper4(uint16_t addr, uint8_t val) {
         } else {
             // $A000: Mirroring
             mirrorVertical = (val & 0x01) == 0;
+            updateNtPtrs();
         }
     } else if (addr < 0xE000) {
         if (addr & 1) {
-            // $C001: IRQ reload
+            // $C001: IRQ reload — 清零计数器并设置重载标志
+            // 这确保下次 clock 时强制从 latch 重新加载 (FCEUX/Mesen 行为)
+            mmc3IrqCounter = 0;
             mmc3IrqReload = true;
         } else {
             // $C000: IRQ latch
@@ -508,19 +575,37 @@ void Cartridge::cpuWriteMapper4(uint16_t addr, uint8_t val) {
         if (addr & 1) {
             // $E001: IRQ enable
             mmc3IrqEnabled = true;
-            if (mmc3DebugEvents < 80) {
-                Serial.printf("MMC3 WRITE $E001 IRQ ENABLE (enabled=1)\n");
-                mmc3DebugEvents++;
-            }
         } else {
-            // $E000: IRQ disable
+            // $E000: IRQ disable + acknowledge
             mmc3IrqEnabled = false;
             mmc3IrqPending = false;
-            if (mmc3DebugEvents < 80) {
-                Serial.printf("MMC3 WRITE $E000 IRQ DISABLE (enabled=0)\n");
-                mmc3DebugEvents++;
-            }
         }
+    }
+}
+
+// ============================================================================
+// Nametable Pointer Cache
+// ============================================================================
+
+/**
+ * 更新 nametable 指针缓存
+ * 将镜像计算从每次读取移到镜像变更时，消除 readNameTable() 中的分支
+ * 每帧约 15000+ 次 readNameTable 调用，每次节省 2-3 个分支判断
+ */
+void Cartridge::updateNtPtrs() {
+    if (!vram) return;
+    if (mirrorVertical) {
+        // 垂直镜像: NT0=NT2, NT1=NT3
+        ntPtrs[0] = vram;
+        ntPtrs[1] = vram + 0x400;
+        ntPtrs[2] = vram;
+        ntPtrs[3] = vram + 0x400;
+    } else {
+        // 水平镜像: NT0=NT1, NT2=NT3
+        ntPtrs[0] = vram;
+        ntPtrs[1] = vram;
+        ntPtrs[2] = vram + 0x400;
+        ntPtrs[3] = vram + 0x400;
     }
 }
 
@@ -530,15 +615,9 @@ void Cartridge::cpuWriteMapper4(uint16_t addr, uint8_t val) {
 
 uint8_t IRAM_ATTR Cartridge::ppuRead(uint16_t addr) {
     if (addr >= 0x2000) return 0;
-    
-    switch (mapper) {
-        case 1: return ppuReadMapper1(addr);
-        case 3: return ppuReadMapper3(addr);
-        case 4: return ppuReadMapper4(addr);
-        default:
-            // Mapper 0, 2: 使用 chrWindow
-            return chrWindow[addr & 0x1FFF];
-    }
+    // 统一使用 chrBankPtrs 查找表: 消除 switch/分支/乘法开销
+    // 每帧约 20000 次调用，从 ~50 指令降到 ~5 指令
+    return chrBankPtrs[(addr >> 10) & 7][addr & 0x3FF];
 }
 
 
@@ -549,56 +628,22 @@ uint8_t IRAM_ATTR Cartridge::ppuRead(uint16_t addr) {
  * 因此必须在这里处理镜像，而不是在 PPU 中缓存
  */
 uint8_t IRAM_ATTR Cartridge::readNameTable(uint16_t addr) {
-    if (!vram) return 0;
-    
-    uint16_t vAddr = addr & 0x0FFF;  // $2000-$2FFF 映射到 $000-$FFF
-    
-    if (mirrorVertical) {
-        // 垂直镜像: $2000=$2800, $2400=$2C00
-        // NT0 和 NT2 相同，NT1 和 NT3 相同
-        vAddr &= 0x07FF;
-    } else {
-        // 水平镜像: $2000=$2400, $2800=$2C00
-        // NT0 和 NT1 相同，NT2 和 NT3 相同
-        if (vAddr >= 0x0800) {
-            vAddr = (vAddr & 0x03FF) | 0x0400;
-        } else {
-            vAddr &= 0x03FF;
-        }
+    // 使用预计算的 ntPtrs 消除镜像分支
+    uint8_t* p = ntPtrs[(addr >> 10) & 3];
+    if (__builtin_expect(p != nullptr, 1)) {
+        return p[addr & 0x3FF];
     }
-    
-    return vram[vAddr & 0x07FF];
+    return 0;
 }
 
 uint8_t IRAM_ATTR Cartridge::ppuReadMapper1(uint16_t addr) {
-    // MMC1 CHR banking
-    if (!chr || chrBanks == 0) {
-        return chrRam[addr & 0x1FFF];
-    }
-    
-    bool chr8kMode = (mmc1Control & 0x10) == 0;
-    uint32_t chrAddr;
-    
-    if (chr8kMode) {
-        // 8KB 模式
-        uint8_t bank = mmc1ChrBank0 >> 1;
-        chrAddr = (bank * 0x2000) + (addr & 0x1FFF);
-    } else {
-        // 4KB 模式
-        if (addr < 0x1000) {
-            chrAddr = ((uint32_t)mmc1ChrBank0 * 0x1000) + (addr & 0x0FFF);
-        } else {
-            chrAddr = ((uint32_t)mmc1ChrBank1 * 0x1000) + (addr & 0x0FFF);
-        }
-    }
-    
-    if (chrAddr >= chrSize) chrAddr %= chrSize;
-    return chr[chrAddr];
+    // 已由 chrBankPtrs 统一处理，此函数保留仅作兼容
+    return chrBankPtrs[(addr >> 10) & 7][addr & 0x3FF];
 }
 
 uint8_t IRAM_ATTR Cartridge::ppuReadMapper3(uint16_t addr) {
-    // CNROM: chrWindow 已经指向正确的 bank
-    return chrWindow[addr & 0x1FFF];
+    // 已由 chrBankPtrs 统一处理
+    return chrBankPtrs[(addr >> 10) & 7][addr & 0x3FF];
 }
 
 
@@ -725,123 +770,9 @@ uint8_t IRAM_ATTR Cartridge::ppuReadMapper3(uint16_t addr) {
 // }
 
 uint8_t IRAM_ATTR Cartridge::ppuReadMapper4(uint16_t addr) {
-    // =====================================================
-    // MMC3 IRQ —— A12 上升沿检测
-    // =====================================================
-    bool a12 = (addr & 0x1000) != 0;
-
-    uint32_t absCycle = 0;
-    int curScanline = -1;
-    int curDot = -1;
-    bool rendering = false;
-    if (nes) {
-        curScanline = nes->getPPU().getCurrentScanline();
-        curDot = nes->getPPU().getCurrentDot();
-        absCycle = (uint32_t)curScanline * 341u + (uint32_t)curDot;
-        rendering = nes->getPPU().isRendering(); // ✅ 使用 nes->getPPU() 获取 isRendering
-    }
-
-    // A12 debounce
-    if (!a12) {
-        if (mmc3PrevA12) {
-            mmc3A12LowStart = absCycle;
-        }
-    } else {
-        if (!mmc3PrevA12) {
-            uint32_t lowDur = absCycle - mmc3A12LowStart;
-            if (curScanline >= 0 && curScanline < 240 && rendering && lowDur >= 8) {
-                // clock IRQ counter
-                if (mmc3IrqCounter == 0 || mmc3IrqReload) {
-                    mmc3IrqCounter = mmc3IrqLatch;
-                    mmc3IrqReload = false;
-                } else {
-                    mmc3IrqCounter--;
-                }
-
-                if (mmc3IrqCounter == 0 && mmc3IrqEnabled) {
-                    if (nes) {
-                        nes->cpu.irq();
-                        if (mmc3DebugEvents < 120) {
-                            Serial.printf("MMC3 A12_VALID_RISE: -> cpu.irq() scan=%d dot=%d lowDur=%d latch=%d\n",
-                                          curScanline, curDot, lowDur, mmc3IrqLatch);
-                            mmc3DebugEvents++;
-                        }
-                    } else {
-                        mmc3IrqPending = true;
-                    }
-                }
-            } else {
-                if (mmc3DebugEvents < 120) {
-                    Serial.printf("MMC3 A12_IGNORED: scan=%d dot=%d lowDur=%d\n",
-                                  curScanline, curDot, lowDur);
-                    mmc3DebugEvents++;
-                }
-            }
-        }
-    }
-    mmc3PrevA12 = a12;
-
-    // =====================================================
-    // CHR RAM / CHR ROM
-    // =====================================================
-    if (!chr || chrBanks == 0) {
-        return chrRam[addr & 0x1FFF];
-    }
-
-    // =====================================================
-    // MMC3 CHR banking
-    // =====================================================
-    uint8_t bank;
-    uint16_t offset;
-
-    if (mmc3ChrMode) {
-        // 模式 1: 高 4KB 在 $1000-$1FFF
-        if (addr < 0x0400) {
-            bank = mmc3Banks[2]; offset = addr;
-        } else if (addr < 0x0800) {
-            bank = mmc3Banks[3]; offset = addr - 0x0400;
-        } else if (addr < 0x0C00) {
-            bank = mmc3Banks[4]; offset = addr - 0x0800;
-        } else if (addr < 0x1000) {
-            bank = mmc3Banks[5]; offset = addr - 0x0C00;
-        } else if (addr < 0x1800) {
-            bank = mmc3Banks[0] & 0xFE;
-            offset = (addr & 0x0400) ? (addr - 0x1400) : (addr - 0x1000);
-            if (addr & 0x0400) bank++;
-        } else {
-            bank = mmc3Banks[1] & 0xFE;
-            offset = (addr & 0x0400) ? (addr - 0x1C00) : (addr - 0x1800);
-            if (addr & 0x0400) bank++;
-        }
-    } else {
-        // 模式 0: 低 4KB 在 $0000-$0FFF
-        if (addr < 0x0800) {
-            bank = mmc3Banks[0] & 0xFE;
-            offset = (addr & 0x0400) ? (addr - 0x0400) : addr;
-            if (addr & 0x0400) bank++;
-        } else if (addr < 0x1000) {
-            bank = mmc3Banks[1] & 0xFE;
-            offset = (addr & 0x0400) ? (addr - 0x0C00) : (addr - 0x0800);
-            if (addr & 0x0400) bank++;
-        } else if (addr < 0x1400) {
-            bank = mmc3Banks[2]; offset = addr - 0x1000;
-        } else if (addr < 0x1800) {
-            bank = mmc3Banks[3]; offset = addr - 0x1400;
-        } else if (addr < 0x1C00) {
-            bank = mmc3Banks[4]; offset = addr - 0x1800;
-        } else {
-            bank = mmc3Banks[5]; offset = addr - 0x1C00;
-        }
-    }
-
-    // bank 越界保护
-    uint8_t chrBankCount = chrBanks * 8; // 1KB banks
-    if (chrBankCount) bank &= (chrBankCount - 1);
-
-    uint32_t idx = (uint32_t)bank * 0x0400 + (offset & 0x03FF);
-    if (idx >= chrSize) idx %= chrSize;
-
-    return chr[idx];
+    // A12 IRQ 已移至 scanline 级别的 clockIrqCounter() (PPU 每行回调)
+    // CHR banking 已由 chrBankPtrs 查找表统一处理
+    return chrBankPtrs[(addr >> 10) & 7][addr & 0x3FF];
 }
 
 
@@ -895,16 +826,7 @@ void Cartridge::clockIrqCounter() {
     }
     
     if (mmc3IrqCounter == 0 && mmc3IrqEnabled) {
-        if (nes) {
-            nes->cpu.irq();
-            if (mmc3DebugEvents < 80) {
-                Serial.printf("MMC3 clockIrqCounter: -> cpu.irq() irqCounter=%d latch=%d enabled=%d\n",
-                              mmc3IrqCounter, mmc3IrqLatch, mmc3IrqEnabled);
-                mmc3DebugEvents++;
-            }
-        } else {
-            mmc3IrqPending = true;
-        }
+        mmc3IrqPending = true;
     }
 }
 
@@ -1063,4 +985,8 @@ void Cartridge::loadState(const uint8_t* buf, size_t& offset) {
     } else if (chr) {
         chrWindow = chr;
     }
+    
+    // CHR window 更新后重新计算 chrBankPtrs
+    updateChrBankCache();
+    updateNtPtrs();
 }

@@ -18,7 +18,7 @@ public:
     void ppuWrite(uint16_t addr, uint8_t val);
     
     // 设置 VRAM 指针（用于 NameTable 读取时处理动态镜像）
-    void setVramPointer(uint8_t* vramPtr) { vram = vramPtr; }
+    void setVramPointer(uint8_t* vramPtr) { vram = vramPtr; updateNtPtrs(); }
     
     // NameTable 读取（处理动态镜像，MMC3 可在运行时切换）
     uint8_t IRAM_ATTR readNameTable(uint16_t addr);
@@ -35,7 +35,7 @@ public:
     uint8_t* getChrData() { return chrWindow; }
     
     // 镜像模式设置 (用于 MMC1/MMC3)
-    void setMirrorVertical(bool v) { mirrorVertical = v; }
+    void setMirrorVertical(bool v) { mirrorVertical = v; updateNtPtrs(); }
     
     // IRQ 接口 (用于 MMC3)
     bool irqPending() const { return mmc3IrqPending; }
@@ -74,10 +74,21 @@ private:
     // SRAM (用于电池备份)
     uint8_t sram[0x2000];      // 8KB SRAM ($6000-$7FFF)
     
-    // ========== Mapper 2 (UxROM) ==========
+    // ========== PRG Bank Cache ==========
     uint8_t prgBankSelect = 0;  // Mapper 2: 选择的 PRG bank
-    uint32_t prgBank0Offset = 0; // Mapper2: switchable bank base ($8000)
-    uint32_t prgBank1Offset = 0; // Mapper2: fixed last bank base ($C000)
+    uint32_t prgBank0Offset = 0; // $8000 (16KB) 或 $8000-$9FFF (MMC3 8KB)
+    uint32_t prgBank1Offset = 0; // $C000 (16KB) 或 $A000-$BFFF (MMC3 8KB)
+    uint32_t prgBank2Offset = 0; // $C000-$DFFF (MMC3 8KB)
+    uint32_t prgBank3Offset = 0; // $E000-$FFFF (MMC3 8KB)
+    
+    // ========== CHR Bank Pointer Cache ==========
+public:
+    uint8_t* chrBankPtrs[8] = {nullptr}; // 8 x 1KB CHR 指针缓存，消除运行时 bank 计算
+    
+    // ========== Nametable Pointer Cache ==========
+    uint8_t* ntPtrs[4] = {nullptr};  // 4 x 1KB nametable 指针，消除镜像分支
+    void updateNtPtrs();  // 在镜像模式变更时调用
+private:
 
     // ========== Mapper 1 (MMC1) ==========
     uint8_t mmc1ShiftReg = 0x10;   // 移位寄存器 (bit 4 = 重置标志)
@@ -110,13 +121,14 @@ private:
     void updateBankCache();
     void updateMmc1Banks();
     void updateMmc3Banks();
+    void updateChrBankCache();
     
-    // Mapper 读写函数
-    uint8_t cpuReadMapper0(uint16_t addr);
-    uint8_t cpuReadMapper1(uint16_t addr);
-    uint8_t cpuReadMapper2(uint16_t addr);
-    uint8_t cpuReadMapper3(uint16_t addr);
-    uint8_t cpuReadMapper4(uint16_t addr);
+    // Mapper 读写函数 (IRAM_ATTR 确保热路径在 SRAM 执行)
+    uint8_t IRAM_ATTR cpuReadMapper0(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper1(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper2(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper3(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper4(uint16_t addr);
     
     void cpuWriteMapper1(uint16_t addr, uint8_t val);
     void cpuWriteMapper2(uint16_t addr, uint8_t val);

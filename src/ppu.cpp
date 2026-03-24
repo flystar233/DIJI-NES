@@ -489,8 +489,12 @@ bool IRAM_ATTR PPU::checkSprite0HitFast(int scanline) {
         spTileAddr = spPatternBase + sprite0Tile * 16 + patternRow;
     }
     
-    uint8_t spPatLo = fastChrRead(spTileAddr);
-    uint8_t spPatHi = fastChrRead(spTileAddr + 8);
+    uint8_t** chrPtrs_sp0 = cartDirect->chrBankPtrs;
+    uint8_t** ntPtrs_sp0 = cartDirect->ntPtrs;
+    
+    uint8_t spPatLo = chrPtrs_sp0[(spTileAddr >> 10) & 7][spTileAddr & 0x3FF];
+    uint16_t spTileAddr8 = spTileAddr + 8;
+    uint8_t spPatHi = chrPtrs_sp0[(spTileAddr8 >> 10) & 7][spTileAddr8 & 0x3FF];
     
     // 如果精灵这行全透明，不可能 hit
     if ((spPatLo | spPatHi) == 0) return false;
@@ -530,15 +534,14 @@ bool IRAM_ATTR PPU::checkSprite0HitFast(int scanline) {
         }
         int tileFineX = bgPixelX & 0x07;
         
-        // 读取背景 tile
-        uint16_t ntBase = 0x2000 + (nt * 0x400);
-        uint16_t ntAddr = ntBase + coarseY * 32 + bgTileX;
-        uint8_t tileIndex = fastVramRead(ntAddr);
+        // 读取背景 tile — 直接通过 ntPtrs 内联
+        uint8_t tileIndex = ntPtrs_sp0[nt][coarseY * 32 + bgTileX];
         
-        // 读取背景 pattern
+        // 读取背景 pattern — 直接通过 chrPtrs 内联
         uint16_t bgPatAddr = bgPatternBase + tileIndex * 16 + fineYOffset;
-        uint8_t bgPatLo = fastChrRead(bgPatAddr);
-        uint8_t bgPatHi = fastChrRead(bgPatAddr + 8);
+        uint8_t bgPatLo = chrPtrs_sp0[(bgPatAddr >> 10) & 7][bgPatAddr & 0x3FF];
+        uint16_t bgPatAddr8 = bgPatAddr + 8;
+        uint8_t bgPatHi = chrPtrs_sp0[(bgPatAddr8 >> 10) & 7][bgPatAddr8 & 0x3FF];
         
         // 计算这个像素的背景颜色
         int shift = 7 - tileFineX;
@@ -552,6 +555,38 @@ bool IRAM_ATTR PPU::checkSprite0HitFast(int scanline) {
     }
     
     return false;
+}
+
+/**
+ * OAM 预评估 — 每帧开始时调用一次
+ * 
+ * 为每条扫描线预先构建精灵索引列表，消除 renderSpriteLine 中
+ * 每行扫描全部 64 个精灵的开销 (240×64=15360 → 64+240×~4=~1024)
+ * 
+ * 使用反向扫描(63→0)以保持与原渲染顺序一致：
+ * 低索引精灵后渲染 = 高优先级 = 显示在最上面
+ */
+void IRAM_ATTR PPU::evaluateOAM() {
+    memset(spriteCountPerLine, 0, 240);
+    
+    int spriteHeight = (ppuCtrl & 0x20) ? 16 : 8;
+    
+    // 反向扫描以匹配原有渲染顺序
+    for (int i = 63; i >= 0; i--) {
+        uint8_t y = oam[i * 4];
+        if (y >= 0xEF) continue;
+        
+        int spriteY = y + 1;
+        int endY = spriteY + spriteHeight;
+        if (endY > 240) endY = 240;
+        if (spriteY < 0) spriteY = 0;
+        
+        for (int sl = spriteY; sl < endY; sl++) {
+            if (spriteCountPerLine[sl] < MAX_SPRITES_PER_LINE) {
+                spriteIndicesPerLine[sl][spriteCountPerLine[sl]++] = i;
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -594,70 +629,75 @@ void IRAM_ATTR PPU::renderBackgroundLine(int scanline, uint16_t* lineBuffer) {
     }
     
     // 检查背景是否启用
-    if (!(ppuMask & 0x08)) return;
+    if (!(ppuMask & 0x08)) {
+        // 背景禁用: 用 bgColor 填充 lineBuffer (精灵仍需要底色)
+        if (lineBuffer) {
+            uint16_t bgColor = bgPaletteCache[0];
+            uint32_t bgColor32 = (bgColor << 16) | bgColor;
+            uint32_t* lb32 = (uint32_t*)lineBuffer;
+            for (int i = 0; i < 128; i++) { lb32[i] = bgColor32; }
+        }
+        return;
+    }
     
     // Pattern Table 基地址 (由 PPUCTRL bit 4 决定)
     uint16_t patternBase = (ppuCtrl & 0x10) ? 0x1000 : 0x0000;
     
-    // ========== 从 vramAddr 解析滚动位置 ==========
-    // 使用 vramAddr 而不是 savedScrollAddr，这样每条扫描线都使用正确的滚动位置
-    // MMC3 游戏会在 IRQ 中修改滚动，必须使用实时的 vramAddr
-    // vramAddr 格式: 0yyy NNYY YYYX XXXX
-    int coarseX = vramAddr & 0x001F;                     // bit 0-4
-    int coarseY = (vramAddr >> 5) & 0x1F;                // bit 5-9
-    int fineYOffset = (vramAddr >> 12) & 0x07;           // bit 12-14
-    // 使用完整的 2-bit nametable index，避免拆成 X/Y 导致重复组合
-    int baseNt = (vramAddr >> 10) & 0x03;                // bits 10-11
+    // ========== 缓存指针本地化 (消除函数调用开销) ==========
+    // 每条扫描线 ~33 tiles × 4 reads = ~132 function calls → 0 function calls
+    uint8_t** ntPtrs = cartDirect->ntPtrs;
+    uint8_t** chrPtrs = cartDirect->chrBankPtrs;
     
-    // 计算 tile 行
+    // ========== 从 vramAddr 解析滚动位置 ==========
+    int coarseX = vramAddr & 0x001F;
+    int coarseY = (vramAddr >> 5) & 0x1F;
+    int fineYOffset = (vramAddr >> 12) & 0x07;
+    int baseNt = (vramAddr >> 10) & 0x03;
     int tileY = coarseY;
     
-    // 渲染 256 个像素
+    // 背景色 (用于无分支写入)
+    uint16_t bgColor = bgPaletteCache[0];
+    
     int screenX = 0;
+    // 增量追踪 coarseX 和 nametable，避免每个 tile 重新计算
+    int curCoarseX = coarseX + (fineX >> 3);
+    int curNt = baseNt;
+    if (curCoarseX >= 32) { curCoarseX -= 32; curNt ^= 1; }
     
     for (int tileCount = 0; tileCount < 33 && screenX < 256; tileCount++) {
-        // 计算当前 tile 的 X 坐标和 nametable
-        int pixelX = screenX + fineX;
-        int currentCoarseX = coarseX + (pixelX >> 3);
-        int nt = baseNt;
-
-        // 处理 X 方向超过 32 tiles 时的 nametable 切换 — 只翻转 bit0
-        if (currentCoarseX >= 32) {
-            currentCoarseX -= 32;
-            nt ^= 1;
-        }
-
-        // 计算 nametable 地址（镜像由 Cartridge 处理）
-        uint16_t ntBase = 0x2000 + (nt * 0x400);
-        uint16_t ntAddr = ntBase + tileY * 32 + currentCoarseX;
-        uint8_t tileIndex = fastVramRead(ntAddr);
+        // nametable 和 属性地址 — 直接通过 ntPtrs 内联访问
+        int ntIdx = curNt;
+        uint16_t tileOffset = tileY * 32 + curCoarseX;
+        uint8_t tileIndex = ntPtrs[ntIdx][tileOffset];
         
-        // ========== 读取属性字节 ==========
-        uint16_t attrAddr = ntBase + 0x3C0 + (tileY >> 2) * 8 + (currentCoarseX >> 2);
-        uint8_t attrByte = fastVramRead(attrAddr);
-        int attrShift = ((tileY & 0x02) << 1) | (currentCoarseX & 0x02);
+        uint16_t attrOffset = 0x3C0 + (tileY >> 2) * 8 + (curCoarseX >> 2);
+        uint8_t attrByte = ntPtrs[ntIdx][attrOffset];
+        int attrShift = ((tileY & 0x02) << 1) | (curCoarseX & 0x02);
         uint8_t paletteNum = (attrByte >> attrShift) & 0x03;
         
-        // 调色板基址
-        uint16_t* palette = &bgPaletteCache[paletteNum << 2];
+        // 构建含背景色的调色板（index 0 = bgColor）
+        uint16_t* srcPal = &bgPaletteCache[paletteNum << 2];
+        uint16_t tilePal[4] = { bgColor, srcPal[1], srcPal[2], srcPal[3] };
         
-        // ========== 读取 Pattern 数据 ==========
+        // 读取 Pattern 数据 — 直接通过 chrPtrs 内联访问
         uint16_t patAddr = patternBase + tileIndex * 16 + fineYOffset;
-        uint8_t patLo = fastChrRead(patAddr);
-        uint8_t patHi = fastChrRead(patAddr + 8);
+        uint8_t patLo = chrPtrs[(patAddr >> 10) & 7][patAddr & 0x3FF];
+        uint8_t patHi = chrPtrs[((patAddr + 8) >> 10) & 7][(patAddr + 8) & 0x3FF];
         
-        // 计算这个 tile 的起始像素
-        int startBit = (tileCount == 0) ? fineX : 0;
+        int startBit = (tileCount == 0) ? (fineX & 7) : 0;
         
-        // 快速展开 8 个像素
         if ((patLo | patHi) == 0) {
-            // 整行透明，跳过
+            // 全透明 tile: 直接填充 bgColor + 清零 opacity
             int pixelsToRender = 8 - startBit;
+            if (lineBuffer) {
+                for (int k = 0; k < pixelsToRender && screenX + k < 256; k++) {
+                    lineBuffer[screenX + k] = bgColor;
+                }
+            }
             screenX += pixelsToRender;
             if (screenX > 256) screenX = 256;
-            if (screenX >= 256) break;
         } else {
-            // 预计算像素值
+            // 解码 8 个像素
             uint8_t pixels[8];
             pixels[0] = ((patLo >> 7) & 1) | (((patHi >> 7) & 1) << 1);
             pixels[1] = ((patLo >> 6) & 1) | (((patHi >> 6) & 1) << 1);
@@ -668,20 +708,43 @@ void IRAM_ATTR PPU::renderBackgroundLine(int scanline, uint16_t* lineBuffer) {
             pixels[6] = ((patLo >> 1) & 1) | (((patHi >> 1) & 1) << 1);
             pixels[7] = (patLo & 1) | ((patHi & 1) << 1);
             
-            for (int bit = startBit; bit < 8 && screenX < 256; bit++, screenX++) {
-                uint8_t px = pixels[bit];
-                if (px) {
-                    // 总是填充 bgPixelOpacity (Sprite 0 Hit 检测需要)
-                    bgPixelOpacity[screenX] = 1;
-                    // 只有 lineBuffer 有效时才写入像素
+            // 无分支像素写入: tilePal[0]=bgColor, 无需 if(px)
+            if (startBit == 0 && screenX + 8 <= 256 && lineBuffer) {
+                // 快速路径: 完整 tile，4 组 32-bit 写入
+                uint32_t* out32 = (uint32_t*)(lineBuffer + screenX);
+                out32[0] = (uint32_t)tilePal[pixels[0]] | ((uint32_t)tilePal[pixels[1]] << 16);
+                out32[1] = (uint32_t)tilePal[pixels[2]] | ((uint32_t)tilePal[pixels[3]] << 16);
+                out32[2] = (uint32_t)tilePal[pixels[4]] | ((uint32_t)tilePal[pixels[5]] << 16);
+                out32[3] = (uint32_t)tilePal[pixels[6]] | ((uint32_t)tilePal[pixels[7]] << 16);
+                // 设置不透明度 (无分支)
+                uint8_t* op = bgPixelOpacity + screenX;
+                op[0] = (pixels[0] != 0);
+                op[1] = (pixels[1] != 0);
+                op[2] = (pixels[2] != 0);
+                op[3] = (pixels[3] != 0);
+                op[4] = (pixels[4] != 0);
+                op[5] = (pixels[5] != 0);
+                op[6] = (pixels[6] != 0);
+                op[7] = (pixels[7] != 0);
+                screenX += 8;
+            } else {
+                // 慢速路径: 首/尾 partial tile
+                for (int bit = startBit; bit < 8 && screenX < 256; bit++, screenX++) {
+                    uint8_t px = pixels[bit];
                     if (lineBuffer) {
-                        lineBuffer[screenX] = palette[px];
+                        lineBuffer[screenX] = tilePal[px];
                     }
+                    bgPixelOpacity[screenX] = (px != 0);
                 }
             }
         }
         
-        // 不要在此处手动更新 coarseX/nametableX，坐标由 pixelX/currentCoarseX 计算驱动
+        // 增量推进 coarseX
+        curCoarseX++;
+        if (curCoarseX >= 32) {
+            curCoarseX = 0;
+            curNt ^= 1;
+        }
     }
 }
 
@@ -712,38 +775,29 @@ void IRAM_ATTR PPU::renderSpriteLine(int scanline, uint16_t* lineBuffer) {
     // Pattern Table 基地址 (由 PPUCTRL bit 3 决定)
     uint16_t patternBase = (ppuCtrl & 0x08) ? 0x1000 : 0x0000;
     
+    // ========== 缓存指针本地化 (消除 fastChrRead 函数调用) ==========
+    uint8_t** chrPtrs = cartDirect->chrBankPtrs;
+    
     // 8x16 模式? (PPUCTRL bit 5)
     bool is8x16 = (ppuCtrl & 0x20) != 0;
     int spriteHeight = is8x16 ? 16 : 8;
     
-    // 当前扫描线的精灵计数 (NES 限制每行 8 个精灵)
-    int spriteCount = 0;
-    
     // Sprite 0 hit 检测标志
-    bool sprite0OnLine = false;
     bool checkSprite0Hit = ((ppuStatus & 0x40) == 0);  // 只有未 hit 时才检测
     
-    // 从后往前渲染精灵 (低索引精灵优先级高)
-    // 注意: 我们倒序遍历，这样低索引的精灵会覆盖高索引的
-    for (int i = 63; i >= 0 && spriteCount < 8; i--) {
+    // 使用预评估的精灵列表 (evaluateOAM 已在帧开始时构建)
+    // spriteIndicesPerLine[scanline] 按 63→0 顺序存储，正向遍历即可保持优先级
+    int count = spriteCountPerLine[scanline];
+    
+    for (int j = 0; j < count; j++) {
+        int i = spriteIndicesPerLine[scanline][j];
+        
         uint8_t y = oam[i * 4 + 0];
         uint8_t tileIndex = oam[i * 4 + 1];
         uint8_t attr = oam[i * 4 + 2];
         uint8_t x = oam[i * 4 + 3];
         
-        // 跳过屏幕外的精灵
-        if (y >= 0xEF) continue;
-        
-        // 精灵 Y 坐标需要 +1 (OAM 存储的是 Y-1)
         int spriteY = y + 1;
-        
-        // 检查精灵是否在当前扫描线上
-        if (scanline < spriteY || scanline >= spriteY + spriteHeight) continue;
-        
-        spriteCount++;
-        
-        // 标记 Sprite 0 在当前行
-        if (i == 0) sprite0OnLine = true;
         
         // 解析属性
         int paletteNum = attr & 0x03;
@@ -775,9 +829,10 @@ void IRAM_ATTR PPU::renderSpriteLine(int scanline, uint16_t* lineBuffer) {
             tileAddr = patternBase + tileIndex * 16 + patternRow;
         }
         
-        // ========== 读取 Pattern 数据 ==========
-        uint8_t patternLo = fastChrRead(tileAddr);
-        uint8_t patternHi = fastChrRead(tileAddr + 8);
+        // ========== 读取 Pattern 数据 — 直接通过 chrPtrs 内联 ==========
+        uint8_t patternLo = chrPtrs[(tileAddr >> 10) & 7][tileAddr & 0x3FF];
+        uint16_t tileAddr8 = tileAddr + 8;
+        uint8_t patternHi = chrPtrs[(tileAddr8 >> 10) & 7][tileAddr8 & 0x3FF];
         
         // 如果整行都是透明的，跳过
         if ((patternLo | patternHi) == 0) continue;
@@ -875,6 +930,8 @@ void IRAM_ATTR PPU::renderLine(int scanline, uint16_t* lineBuffer) {
         if (renderingEnabled) {
             vramAddr = tempAddr;
         }
+        // 预评估 OAM: 构建每条扫描线的精灵索引列表
+        evaluateOAM();
     } else {
         // 每条扫描线开始时，同步 coarse X（模拟 PPU 行开始行为）
         if (renderingEnabled) {
@@ -882,15 +939,8 @@ void IRAM_ATTR PPU::renderLine(int scanline, uint16_t* lineBuffer) {
         }
     }
     
-    // 如果 lineBuffer 有效，填充背景色
-    if (lineBuffer) {
-        uint16_t bgColor = bgPaletteCache[0];
-        uint32_t bgColor32 = (bgColor << 16) | bgColor;
-        uint32_t* lb32 = (uint32_t*)lineBuffer;
-        for (int i = 0; i < 128; i++) {  // 256/2 = 128
-            lb32[i] = bgColor32;
-        }
-    }
+    // 背景色填充已移至 renderBackgroundLine 内部（无分支写入）
+    // 不再需要单独的 bgColor 填充 pass
     
     // 渲染背景 (即使 lineBuffer 为 nullptr 也会填充 bgPixelOpacity)
     renderBackgroundLine(scanline, lineBuffer);

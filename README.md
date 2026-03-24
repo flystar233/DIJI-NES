@@ -23,12 +23,13 @@ A NES (Nintendo Entertainment System) emulator running on ESP32-S3 microcontroll
 ## ✨ 功能特性 / Features
 
 - **完整 CPU 模拟** - 6502 CPU 全指令集 (~150 操作码)
-- **PPU 图形** - 背景渲染、滚动、64 个精灵 (8×8 和 8×16 模式)
+- **PPU 图形** - 背景渲染、滚动、分屏效果、64 个精灵 (8×8 和 8×16 模式)
 - **APU 音频** - 方波、三角波、噪声、DMC 通道，通过 I2S DAC 输出
 - **双核架构** - Core 0: 音频 + 显示, Core 1: 模拟
-- **50 FPS** - 大部分游戏可达到 50 FPS
-- **Mapper 支持** - NROM, MMC1, UxROM, CNROM, MMC3 (部分)
+- **60 FPS** - 大部分游戏稳定 60 FPS
+- **Mapper 支持** - NROM, MMC1, UxROM, CNROM, MMC3
 - **存档功能** - 快速存档/读档到 SD 卡
+- **菜单系统** - ROM 浏览器、暂停菜单、无 SD 卡时提示界面
 
 ---
 
@@ -40,18 +41,18 @@ A NES (Nintendo Entertainment System) emulator running on ESP32-S3 microcontroll
 | 1      | MMC1   | ✅ 正常   |
 | 2      | UxROM  | ✅ 正常   |
 | 3      | CNROM  | ✅ 正常   |
-| 4      | MMC3   | ⚠️ 部分   | 
+| 4      | MMC3   | ✅ 正常   |
 
 
 ### Project Status / 项目状态
 
-本项目目前已支持 **NES 前期与中期的大多数游戏**。
+本项目已支持 **NES 前期、中期及大部分后期游戏**，包括依赖 MMC3 扫描线 IRQ 的游戏（如超级马里奥 3）。
 
-对于 NES 后期作品，尤其是依赖 **分屏滚动（split-screen scrolling）** 与 **MMC3 扫描线 IRQ 时序** 的游戏，相关功能仍在持续改进中，可能出现速度或表现异常。
+少数非标准时序或特殊 mapper 的游戏可能仍有兼容性问题。
 
-This emulator currently supports the majority of **early- and mid-era NES titles**.
+This emulator now supports **early-, mid-, and most late-era NES titles**, including games that rely on **MMC3 scanline IRQ timing** (e.g., Super Mario Bros. 3).
 
-Later-generation games—especially those relying on **split-screen scrolling** and **MMC3 scanline IRQ timing**—are still a work in progress, and may not run at full speed or behave correctly yet.
+A small number of games with non-standard timing or special mappers may still have compatibility issues.
 
 ---
 
@@ -59,10 +60,10 @@ Later-generation games—especially those relying on **split-screen scrolling** 
 
 | 指标       | 数值          |
 |------------|---------------|
-| 模拟 FPS   | 50-60 FPS     |
+| 模拟 FPS   | 60 FPS (稳定) |
 | 音频采样率 | 44100 Hz      |
-| Flash 使用 | ~460 KB (7%)  |
-| RAM 使用   | ~39 KB (12%)  |
+| Flash 使用 | ~486 KB (7%)  |
+| RAM 使用   | ~51 KB (16%)  |
 
 ---
 
@@ -273,9 +274,8 @@ DiJi-NES/
 
 ## 🔮 已知问题 / Known Issues
 
-- MMC3 mapper 部分游戏可能无法正常运行
-- 某些游戏的 Sprite 0 hit 检测可能不准确
-- 部分复杂游戏可能偶有图形问题
+- 某些使用非标准时序的游戏可能有图形问题
+- 盗版 ROM 的脏 iNES 头可能导致 mapper 识别错误（已加入自动检测）
 
 ---
 

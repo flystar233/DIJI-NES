@@ -117,6 +117,7 @@ static void muteAudio();
 static bool gameJustEntered = false;
 // 游戏暂停状态 - APU 任务使用
 static volatile bool gameRunning = false;
+static bool sdCardAvailable = false;  // SD 卡是否可用
 
 // 帧同步
 const uint32_t FRAME_TIME_US = 16667;  // ~60 FPS (1000000 / 60)
@@ -147,7 +148,8 @@ void handleMenuInput();
 void handlePauseInput();
 bool loadSelectedROM();
 void returnToMainMenu();
-void clearScreenForGame();  // 清除屏幕边缘，进入游戏前调用
+void clearScreenForGame();
+bool tryInitSD();  // 尝试初始化 SD 卡
 
 // 从 ROM 路径生成 Save State 路径 (将 .nes 替换为 .sav)
 static void getSaveStatePath(char* savePath, size_t maxLen) {
@@ -305,17 +307,23 @@ void clearScreenForGame() {
     }
 }
 
-void initializeSD() {
+bool tryInitSD() {
     // 使用独立 SPI 总线初始化 SD
     sdSPI.begin(SD_SCLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
 
     if (!SD.begin(SD_CS_PIN, sdSPI, SD_FREQ)) {
-        
-        while(true) {
-            delay(1000);
-        }
+        Serial.println("SD card init failed or not inserted");
+        sdCardAvailable = false;
+        return false;
     }
     
+    Serial.println("SD card initialized");
+    sdCardAvailable = true;
+    return true;
+}
+
+void initializeSD() {
+    tryInitSD();
 }
 
 // ================ ROM 文件扫描 ================
@@ -396,10 +404,24 @@ void drawMainMenu() {
     if (romList.empty()) {
         tft.setTextColor(MENU_HINT_COLOR);
         tft.setTextSize(1);
-        tft.setCursor(80, listStartY + 60);
-        tft.print("No ROM files found on SD card");
-        tft.setCursor(90, listStartY + 80);
-        tft.print("Please add .nes files");
+        if (!sdCardAvailable) {
+            // SD 卡未插入
+            tft.setCursor(60, listStartY + 40);
+            tft.print("No SD card detected");
+            tft.setCursor(40, listStartY + 60);
+            tft.print("Please insert SD card with");
+            tft.setCursor(40, listStartY + 75);
+            tft.print(".nes ROM files");
+            tft.setCursor(50, listStartY + 100);
+            tft.setTextColor(MENU_ARROW_COLOR);
+            tft.print("Press A to retry");
+        } else {
+            // SD 卡已插入但没有 ROM
+            tft.setCursor(80, listStartY + 60);
+            tft.print("No ROM files found on SD card");
+            tft.setCursor(90, listStartY + 80);
+            tft.print("Please add .nes files");
+        }
     } else {
         // 计算分页信息
         int totalPages = (romList.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
@@ -534,7 +556,19 @@ void handleMenuInput() {
     
     updateButtons();
     
-    if (romList.empty()) return;
+    if (romList.empty()) {
+        // 无 ROM 或无 SD 卡时，A 键重试 SD 初始化
+        if (buttons.A) {
+            lastButtonTime = now;
+            SD.end();
+            delay(100);
+            if (tryInitSD()) {
+                scanROMFiles();
+            }
+            drawMainMenu();
+        }
+        return;
+    }
     
     bool buttonPressed = false;
     
@@ -843,7 +877,9 @@ void returnToMainMenu() {
 
 void loadROM() {
     // 现在使用菜单选择，这里只是扫描ROM列表
-    scanROMFiles();
+    if (sdCardAvailable) {
+        scanROMFiles();
+    }
 }
 
 // ---------------- Audio (I2S) ----------------

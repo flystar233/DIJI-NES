@@ -196,50 +196,61 @@ void IRAM_ATTR NES::clock() {
         ppu.getSprite0YRange(sprite0StartY, sprite0EndY);
         // 只有 Sprite 0 在可见区域内才需要检测
         needSprite0Check = (sprite0StartY >= 0 && sprite0StartY < 240 && sprite0EndY > 0);
-        
-        // 关键：跳帧时必须初始化 PPU 帧状态（调色板缓存 + vramAddr）
-        if (needSprite0Check) {
-            ppu.initFrameForSprite0Check();
-        }
+    }
+    
+    // 关键：跳帧时也必须初始化 PPU 帧状态（调色板 + vramAddr = tempAddr）
+    // MMC3 游戏依赖正确的滚动状态来触发 IRQ 和 bank 切换
+    if (skipRender) {
+        ppu.initFrameForSprite0Check();
     }
     
     // 可见扫描线 0-239 (每 3 行一组)
+    // 时序顺序: PPU渲染 → IRQ时钟(扫描线末尾) → IRQ分发 → CPU执行
+    // 这确保 IRQ handler 在 cpu.clock() 中执行，其滚动/bank 修改
+    // 能在下一条扫描线的 renderLine() 中生效
     for (int scanline = 0; scanline < 240; scanline += 3) {
         // 行 0
-        if (!skipRender && ppu.renderEnabled) {
+        if (!skipRender) {
             ppu.renderLine(scanline, ppu.frameBuffer + scanline * 256);
-        } else if (skipRender) {
-            // 跳帧模式：轻量级 Sprite 0 Hit 检测 + Y 滚动更新
+        } else {
             if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
                 scanline >= sprite0StartY && scanline < sprite0EndY) {
                 ppu.checkSprite0HitFast(scanline);
             }
             ppu.skipScanlineForScrollUpdate();
         }
+        // MMC3 IRQ: 只在 PPU 渲染启用时时钟计数器 (A12 需要渲染活动才会翻转)
+        // 但 pending IRQ 无论渲染状态都应被 CPU 接收
+        if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
+        if (cart.irqPending()) cpu.irq();
         cpu.clock(113);
         
         // 行 1
-        if (!skipRender && ppu.renderEnabled) {
+        if (!skipRender) {
             ppu.renderLine(scanline + 1, ppu.frameBuffer + (scanline + 1) * 256);
-        } else if (skipRender) {
+        } else {
             if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
                 (scanline + 1) >= sprite0StartY && (scanline + 1) < sprite0EndY) {
                 ppu.checkSprite0HitFast(scanline + 1);
             }
             ppu.skipScanlineForScrollUpdate();
         }
+        if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
+        if (cart.irqPending()) cpu.irq();
         cpu.clock(114);
         
         // 行 2
-        if (!skipRender && ppu.renderEnabled) {
+        if (!skipRender) {
             ppu.renderLine(scanline + 2, ppu.frameBuffer + (scanline + 2) * 256);
-        } else if (skipRender) {
+        } else {
             if (needSprite0Check && !(ppu.getPpuStatus() & 0x40) &&
                 (scanline + 2) >= sprite0StartY && (scanline + 2) < sprite0EndY) {
                 ppu.checkSprite0HitFast(scanline + 2);
             }
             ppu.skipScanlineForScrollUpdate();
         }
+        if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
+        if (cart.irqPending()) cpu.irq();
         cpu.clock(114);
     }
     
@@ -251,16 +262,19 @@ void IRAM_ATTR NES::clock() {
     if (ppu.nmiEnabled()) {
         cpu.nmi();
     }
-    cpu.clock(2501);  // VBlank 期间的 CPU 周期
+    cpu.clock(2274);  // VBlank 期间的 CPU 周期 (20 scanlines × ~113.67)
     
     // 扫描线 261: Pre-render
     ppu.setVBlank(false);
     ppu.clearSprite0Hit();  // 清除 Sprite 0 Hit
+    // Pre-render 扫描线也触发 MMC3 IRQ 时钟 (A12 脉冲)
+    if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
+    if (cart.irqPending()) cpu.irq();
     cpu.clock(114);
     
     // 设置帧完成标志
     ppu.frameReady = true;
-    ppu.renderedThisFrame = !skipRender && ppu.renderEnabled;
+    ppu.renderedThisFrame = !skipRender;
     
     // 切换 frame_latch (用于 FRAMESKIP 模式)
     frame_latch = !frame_latch;
@@ -321,8 +335,8 @@ uint8_t IRAM_ATTR NES::cpuRead(uint16_t addr) {
         // 转发到 APU 寄存器读取
         return apu.regRead(addr);
     }
-    else if (addr >= 0x8000) {
-        // $8000-$FFFF: Cartridge PRG ROM
+    else if (addr >= 0x6000) {
+        // $6000-$FFFF: Cartridge (SRAM $6000-$7FFF + PRG ROM $8000-$FFFF)
         return cart.cpuRead(addr);
     }
     return 0;
@@ -357,8 +371,8 @@ void IRAM_ATTR NES::cpuWrite(uint16_t addr, uint8_t val) {
         // $4000-$401F: APU 寄存器 (转发到 APU)
         apu.regWrite(addr, val);
     }
-    else if (addr >= 0x8000) {
-        // Mapper 写入
+    else if (addr >= 0x6000) {
+        // $6000-$7FFF: SRAM 写入, $8000+: Mapper 写入
         cart.cpuWrite(addr, val);
     }
 }
