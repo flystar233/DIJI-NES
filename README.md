@@ -12,6 +12,10 @@
 > 
 > This is a learning project for understanding NES emulation and embedded systems programming. Some features are still under development.
 
+<p align="center">
+   <img src="./images/DIJI-NES_photo.jpg" alt="DIJI-NES Photo" width="70%">
+</p>
+
 ---
 
 ESP32-S3 上运行的 NES（任天堂红白机）模拟器，支持显示、音频和控制器。
@@ -79,6 +83,10 @@ A small number of games with non-standard timing or special mappers may still ha
 
 ---
 
+<p align="center">
+   <img src="./images/DIJI-NES_circuit.jpg" alt="DIJI-NES Circuit" width="85%">
+</p>
+
 ## 📌 引脚配置 / Pin Configuration
 
 ### SD 卡
@@ -138,6 +146,22 @@ If you encounter these problems, try modifying the following setting in lgfx_con
 
 ---
 
+### 固件文件 / Prebuilt Firmware
+
+为方便直接烧录，仓库根目录提供了预编译合并固件：
+
+- [firmware/DIJI-NES_v0.2.1.bin](firmware/DIJI-NES_v0.2.1.bin)
+
+该文件已合并 **bootloader + partitions + boot_app0 + app firmware**，可直接按地址 **0x0** 烧录。
+
+For convenience, a prebuilt merged firmware image is included in the repository root:
+
+- [firmware/DIJI-NES_v0.2.1.bin](firmware/DIJI-NES_v0.2.1.bin)
+
+This image already contains the **bootloader + partitions + boot_app0 + application firmware**, so it can be flashed directly to address **0x0**.
+
+---
+
 ### Option 1: Using PlatformIO (Recommended)  
 ### 方式一：使用 PlatformIO（推荐）
 
@@ -152,6 +176,36 @@ If you encounter these problems, try modifying the following setting in lgfx_con
 
 4. Click **Upload** in PlatformIO to build and flash the firmware  
    点击 PlatformIO 的 **Upload** 按钮进行编译并烧录
+
+---
+
+### Option 2: Using Espressif Flash Download Tool  
+### 方式二：使用乐鑫 Flash Download Tool 烧录
+
+如果你希望直接烧录预编译固件，可使用乐鑫官方烧录工具：  
+下载地址：<https://docs.espressif.com/projects/esp-test-tools/zh_CN/latest/esp32/production_stage/tools/flash_download_tool.html>
+
+If you prefer flashing a prebuilt image directly, you can use Espressif's official Flash Download Tool:  
+Download: <https://docs.espressif.com/projects/esp-test-tools/zh_CN/latest/esp32/production_stage/tools/flash_download_tool.html>
+
+1. 启动工具后，将 **ChipType** 选择为 **ESP32S3**，其余选项保持默认。  
+   After launching the tool, set **ChipType** to **ESP32S3** and leave the other options at their default values.
+
+2. 参考下图勾选并配置烧录项：  
+   Follow the example below to select and configure the flashing items:
+
+   <p align="center">
+     <img src="./images/DIJI-NES_flash-download.png" alt="Flash Download Tool Example" width="80%">
+   </p>
+
+3. 选择仓库中的合并固件文件 [firmware/DIJI-NES_v0.2.1.bin](firmware/DIJI-NES_v0.2.1.bin)，烧录地址填写 **0x0**。  
+   Select the merged firmware file [firmware/DIJI-NES_v0.2.1.bin](firmware/DIJI-NES_v0.2.1.bin) from this repository and set the flash address to **0x0**.
+
+4. 确认设备串口连接正常后，点击 **START** 开始烧录。  
+   After confirming the serial port is connected correctly, click **START** to begin flashing.
+
+5. 烧录完成后重启设备，即可进入 DIJI-NES。  
+   Reboot the device after flashing completes to start DIJI-NES.
 
 ---
 
@@ -238,6 +292,8 @@ This project is intended solely for technical learning and research. The author 
 
 ```
 DiJi-NES/
+├── firmware/
+│   └── DIJI-NES_v0.2.1.bin # 预编译合并固件，可直接烧录到 0x0
 ├── src/
 │   ├── main.cpp        # 入口、硬件初始化、主循环
 │   ├── nes.h/.cpp      # NES 系统总线、内存映射

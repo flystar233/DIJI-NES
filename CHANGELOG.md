@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.2.1] - 2026-03-28
+
+### Packaging & Docs / 打包与文档
+
+- 新增仓库内预编译合并固件目录 `firmware/`，提供一键烧录文件 `DIJI-NES_v0.2.1.bin`
+  Added in-repo prebuilt merged firmware folder `firmware/` with one-click flash image `DIJI-NES_v0.2.1.bin`
+- README 新增“方式二：乐鑫 Flash Download Tool”烧录说明（ESP32S3 + 地址 `0x0`）
+  Added README instructions for “Option 2: Espressif Flash Download Tool” (ESP32S3 + address `0x0`)
+- README 补充项目实物图、电路图与烧录示意图，降低首次上手门槛
+  Added project photo, circuit image, and flash-tool screenshot in README for easier onboarding
+
+### Notes / 说明
+
+- 本版本以发布流程和使用体验优化为主，不涉及核心模拟器功能逻辑变更
+  This version focuses on release workflow and usability improvements, with no core emulator logic changes
+
 ## [v0.2.0] - 2026-03-24
 
 ### Performance / 性能优化 (48 FPS → 60 FPS)
