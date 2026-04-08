@@ -269,6 +269,59 @@ If the issue persists, check the PlatformIO output/logs in VS Code for error det
 
 ---
 
+### ⚠️ SD Card Module Notes / SD 卡模块注意事项
+
+Some SD card modules include an onboard voltage regulator, while others do not.  
+部分 SD 卡模块自带稳压芯片，而有些则没有。
+
+- Modules with onboard regulator -> must be powered with **5V**  
+   带稳压模块 -> 必须使用 **5V** 供电
+- Modules without regulator -> must use **3.3V only**  
+   无稳压模块 -> 只能使用 **3.3V** 供电
+
+⚠️ Supplying 5V to a non-regulated module may permanently damage the SD card or module.  
+⚠️ 给无稳压模块输入 5V 可能会直接损坏 SD 卡或模块。
+
+### 🛠️ SD Card Troubleshooting / SD 卡故障排查
+
+**f_mount failed: (3)**
+
+This error is commonly related to SD card initialization failure.  
+该错误通常表示 SD 卡初始化失败。
+
+Possible causes include:  
+可能原因包括：
+
+- Insufficient or incorrect power supply to the SD card module  
+   SD 卡模块供电不足或电压错误
+- Wiring issues  
+   接线问题
+- Incompatible SD card type or format  
+   SD 卡类型或格式不兼容
+
+### 💾 SD Card Compatibility / SD 卡兼容性
+
+- SDHC cards -> ✅ Supported  
+   SDHC 卡 -> ✅ 支持
+- File system: FAT32  
+   文件系统：FAT32
+- Allocation unit size: 512 bytes recommended  
+   建议分配单元大小：512 字节
+- SDXC cards -> ❌ Not supported (library limitation)  
+   SDXC 卡 -> ❌ 不支持（库限制）
+
+### 💡 Notes / 补充说明
+
+If you encounter `f_mount failed: (3)` and all wiring and formatting appear correct, try supplying 5V to modules with onboard regulators.  
+如果你遇到 `f_mount failed: (3)`，且确认接线和格式都正确，可以尝试为带稳压的 SD 模块提供 5V 供电。
+
+### 🙏 Acknowledgement / 致谢
+
+This information is based on community feedback and troubleshooting experience.  
+本说明基于社区用户的反馈与实际排查经验整理。
+
+---
+
 ## 🎮 使用方法 / Usage
 
 注意：本项目不包含、提供或分发任何游戏 ROM。所有 ROM 均为版权所有，属于各自权利人。
