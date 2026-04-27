@@ -184,8 +184,10 @@ void IRAM_ATTR NES::stepScanline() {
  *   - CPU/PPU cycle 精度：为性能让步
  */
 void IRAM_ATTR NES::clock() {
-    // FRAMESKIP: 如果启用抽帧，每隔一帧跳过渲染
-    bool skipRender = frameskipEnabled && frame_latch;
+    // 自适应抽帧：仅在主循环显式请求时才跳过当前帧渲染，
+    // 避免和游戏自身的闪烁节奏锁相，导致角色长期不可见。
+    bool skipRender = frameskipEnabled && skipNextFrame;
+    skipNextFrame = false;
     
     // 获取 Sprite 0 的 Y 范围（用于优化跳帧检测）
     int sprite0StartY = -1, sprite0EndY = -1;
@@ -276,8 +278,6 @@ void IRAM_ATTR NES::clock() {
     ppu.frameReady = true;
     ppu.renderedThisFrame = !skipRender;
     
-    // 切换 frame_latch (用于 FRAMESKIP 模式)
-    frame_latch = !frame_latch;
 }
 
 /**
@@ -692,4 +692,3 @@ bool NES::loadState(const char* path) {
     
     return success;
 }
-

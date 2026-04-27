@@ -70,13 +70,14 @@ private:
     // 行级调度辅助：用于 113/114 周期交替
     bool scanlineParity = false;
     
-    // Anemoia 风格帧级调度的内部状态
-    bool frame_latch = false;  // 用于 FRAMESKIP 模式
     bool frameskipEnabled = true;  // 抽帧开关 (true=启用抽帧, false=每帧都渲染)
     
 public:
     // 设置抽帧开关
     void setFrameskipEnabled(bool enabled) { frameskipEnabled = enabled; }
     bool getFrameskipEnabled() const { return frameskipEnabled; }
-};
+    void requestFrameSkip(bool skip) { skipNextFrame = skip; }
 
+private:
+    bool skipNextFrame = false;
+};

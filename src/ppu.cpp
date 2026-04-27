@@ -43,6 +43,31 @@ static const uint16_t DRAM_ATTR nesPalette[64] = {
     0xD3DE, 0x13CF, 0x35BF, 0x38B7, 0xFCB6, 0x55AD, 0x0000, 0x0000,
 };
 
+// Packed 2bpp pattern row decode for background tiles.
+// lane n stores pixel n in bits [2n+1:2n].
+static uint16_t DRAM_ATTR bgPlaneLut[2][256];
+static bool bgPlaneLutReady = false;
+
+static void initBgPlaneLut() {
+    if (bgPlaneLutReady) return;
+
+    for (int value = 0; value < 256; value++) {
+        uint16_t loPack = 0;
+        uint16_t hiPack = 0;
+        for (int px = 0; px < 8; px++) {
+            int srcBit = 7 - px;
+            if ((value >> srcBit) & 1) {
+                loPack |= (uint16_t)(1u << (px * 2));
+                hiPack |= (uint16_t)(2u << (px * 2));
+            }
+        }
+        bgPlaneLut[0][value] = loPack;
+        bgPlaneLut[1][value] = hiPack;
+    }
+
+    bgPlaneLutReady = true;
+}
+
 // ============================================================================
 // 初始化函数
 // ============================================================================
@@ -77,6 +102,8 @@ void PPU::setMemoryPointers(uint8_t* vramPtr, uint8_t* palettePtr, Cartridge* ca
  * 在模拟器启动或复位时调用
  */
 void PPU::reset() {
+    initBgPlaneLut();
+
     // 清除寄存器
     ppuCtrl = 0;
     ppuMask = 0;
@@ -571,8 +598,9 @@ void IRAM_ATTR PPU::evaluateOAM() {
     
     int spriteHeight = (ppuCtrl & 0x20) ? 16 : 8;
     
-    // 反向扫描以匹配原有渲染顺序
-    for (int i = 63; i >= 0; i--) {
+    // NES 硬件按 OAM 正序选择每条扫描线最前面的 8 个精灵。
+    // 真正的绘制顺序在 renderSpriteLine 中反向处理，以保持低索引优先级最高。
+    for (int i = 0; i < 64; i++) {
         uint8_t y = oam[i * 4];
         if (y >= 0xEF) continue;
         
@@ -697,40 +725,39 @@ void IRAM_ATTR PPU::renderBackgroundLine(int scanline, uint16_t* lineBuffer) {
             screenX += pixelsToRender;
             if (screenX > 256) screenX = 256;
         } else {
-            // 解码 8 个像素
-            uint8_t pixels[8];
-            pixels[0] = ((patLo >> 7) & 1) | (((patHi >> 7) & 1) << 1);
-            pixels[1] = ((patLo >> 6) & 1) | (((patHi >> 6) & 1) << 1);
-            pixels[2] = ((patLo >> 5) & 1) | (((patHi >> 5) & 1) << 1);
-            pixels[3] = ((patLo >> 4) & 1) | (((patHi >> 4) & 1) << 1);
-            pixels[4] = ((patLo >> 3) & 1) | (((patHi >> 3) & 1) << 1);
-            pixels[5] = ((patLo >> 2) & 1) | (((patHi >> 2) & 1) << 1);
-            pixels[6] = ((patLo >> 1) & 1) | (((patHi >> 1) & 1) << 1);
-            pixels[7] = (patLo & 1) | ((patHi & 1) << 1);
+            uint16_t packedPixels = bgPlaneLut[0][patLo] | bgPlaneLut[1][patHi];
+            uint8_t p0 = packedPixels & 0x03;
+            uint8_t p1 = (packedPixels >> 2) & 0x03;
+            uint8_t p2 = (packedPixels >> 4) & 0x03;
+            uint8_t p3 = (packedPixels >> 6) & 0x03;
+            uint8_t p4 = (packedPixels >> 8) & 0x03;
+            uint8_t p5 = (packedPixels >> 10) & 0x03;
+            uint8_t p6 = (packedPixels >> 12) & 0x03;
+            uint8_t p7 = (packedPixels >> 14) & 0x03;
             
             // 无分支像素写入: tilePal[0]=bgColor, 无需 if(px)
             if (startBit == 0 && screenX + 8 <= 256 && lineBuffer) {
                 // 快速路径: 完整 tile，4 组 32-bit 写入
                 uint32_t* out32 = (uint32_t*)(lineBuffer + screenX);
-                out32[0] = (uint32_t)tilePal[pixels[0]] | ((uint32_t)tilePal[pixels[1]] << 16);
-                out32[1] = (uint32_t)tilePal[pixels[2]] | ((uint32_t)tilePal[pixels[3]] << 16);
-                out32[2] = (uint32_t)tilePal[pixels[4]] | ((uint32_t)tilePal[pixels[5]] << 16);
-                out32[3] = (uint32_t)tilePal[pixels[6]] | ((uint32_t)tilePal[pixels[7]] << 16);
+                out32[0] = (uint32_t)tilePal[p0] | ((uint32_t)tilePal[p1] << 16);
+                out32[1] = (uint32_t)tilePal[p2] | ((uint32_t)tilePal[p3] << 16);
+                out32[2] = (uint32_t)tilePal[p4] | ((uint32_t)tilePal[p5] << 16);
+                out32[3] = (uint32_t)tilePal[p6] | ((uint32_t)tilePal[p7] << 16);
                 // 设置不透明度 (无分支)
                 uint8_t* op = bgPixelOpacity + screenX;
-                op[0] = (pixels[0] != 0);
-                op[1] = (pixels[1] != 0);
-                op[2] = (pixels[2] != 0);
-                op[3] = (pixels[3] != 0);
-                op[4] = (pixels[4] != 0);
-                op[5] = (pixels[5] != 0);
-                op[6] = (pixels[6] != 0);
-                op[7] = (pixels[7] != 0);
+                op[0] = (p0 != 0);
+                op[1] = (p1 != 0);
+                op[2] = (p2 != 0);
+                op[3] = (p3 != 0);
+                op[4] = (p4 != 0);
+                op[5] = (p5 != 0);
+                op[6] = (p6 != 0);
+                op[7] = (p7 != 0);
                 screenX += 8;
             } else {
                 // 慢速路径: 首/尾 partial tile
                 for (int bit = startBit; bit < 8 && screenX < 256; bit++, screenX++) {
-                    uint8_t px = pixels[bit];
+                    uint8_t px = (packedPixels >> (bit * 2)) & 0x03;
                     if (lineBuffer) {
                         lineBuffer[screenX] = tilePal[px];
                     }
@@ -744,6 +771,13 @@ void IRAM_ATTR PPU::renderBackgroundLine(int scanline, uint16_t* lineBuffer) {
         if (curCoarseX >= 32) {
             curCoarseX = 0;
             curNt ^= 1;
+        }
+    }
+
+    if (!(ppuMask & 0x02)) {
+        for (int x = 0; x < 8; x++) {
+            bgPixelOpacity[x] = 0;
+            if (lineBuffer) lineBuffer[x] = bgColor;
         }
     }
 }
@@ -784,12 +818,13 @@ void IRAM_ATTR PPU::renderSpriteLine(int scanline, uint16_t* lineBuffer) {
     
     // Sprite 0 hit 检测标志
     bool checkSprite0Hit = ((ppuStatus & 0x40) == 0);  // 只有未 hit 时才检测
+    bool showLeftSprites = (ppuMask & 0x04) != 0;
     
     // 使用预评估的精灵列表 (evaluateOAM 已在帧开始时构建)
-    // spriteIndicesPerLine[scanline] 按 63→0 顺序存储，正向遍历即可保持优先级
+    // 列表按 OAM 正序保存，需要反向绘制，才能让低索引精灵最后覆盖到最上层。
     int count = spriteCountPerLine[scanline];
     
-    for (int j = 0; j < count; j++) {
+    for (int j = count - 1; j >= 0; j--) {
         int i = spriteIndicesPerLine[scanline][j];
         
         uint8_t y = oam[i * 4 + 0];
@@ -869,7 +904,7 @@ void IRAM_ATTR PPU::renderSpriteLine(int scanline, uint16_t* lineBuffer) {
             for (int bit = 0; bit < 8; bit++) {
                 int sx = x + bit;
                 if (sx >= 255) continue;  // X=255 时不产生 hit
-                if (sx < 8 && !(ppuMask & 0x06)) continue;  // 左 8 像素被遮蔽
+                if (sx < 8 && (!showLeftSprites || !(ppuMask & 0x02))) continue;
                 
                 if (pixels[bit]) {
                     // 检测 Sprite 0 hit (精灵和背景都非透明)
@@ -886,20 +921,32 @@ void IRAM_ATTR PPU::renderSpriteLine(int scanline, uint16_t* lineBuffer) {
         } else if (lineBuffer) {
             // 只有 lineBuffer 有效时才渲染非 Sprite 0 精灵
             if (!behindBg) {
-                // 前景精灵: 直接渲染
-                int sx = x;
-                if (sx < 256 && pixels[0]) lineBuffer[sx] = spPal[pixels[0]]; sx++;
-                if (sx < 256 && pixels[1]) lineBuffer[sx] = spPal[pixels[1]]; sx++;
-                if (sx < 256 && pixels[2]) lineBuffer[sx] = spPal[pixels[2]]; sx++;
-                if (sx < 256 && pixels[3]) lineBuffer[sx] = spPal[pixels[3]]; sx++;
-                if (sx < 256 && pixels[4]) lineBuffer[sx] = spPal[pixels[4]]; sx++;
-                if (sx < 256 && pixels[5]) lineBuffer[sx] = spPal[pixels[5]]; sx++;
-                if (sx < 256 && pixels[6]) lineBuffer[sx] = spPal[pixels[6]]; sx++;
-                if (sx < 256 && pixels[7]) lineBuffer[sx] = spPal[pixels[7]];
+                // 前景精灵: 完全在屏内时走无边界检查快路径，减轻多对象场景分支开销。
+                if (x <= 248 && (showLeftSprites || x >= 8)) {
+                    if (pixels[0]) lineBuffer[x + 0] = spPal[pixels[0]];
+                    if (pixels[1]) lineBuffer[x + 1] = spPal[pixels[1]];
+                    if (pixels[2]) lineBuffer[x + 2] = spPal[pixels[2]];
+                    if (pixels[3]) lineBuffer[x + 3] = spPal[pixels[3]];
+                    if (pixels[4]) lineBuffer[x + 4] = spPal[pixels[4]];
+                    if (pixels[5]) lineBuffer[x + 5] = spPal[pixels[5]];
+                    if (pixels[6]) lineBuffer[x + 6] = spPal[pixels[6]];
+                    if (pixels[7]) lineBuffer[x + 7] = spPal[pixels[7]];
+                } else {
+                    int sx = x;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[0]) lineBuffer[sx] = spPal[pixels[0]]; sx++;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[1]) lineBuffer[sx] = spPal[pixels[1]]; sx++;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[2]) lineBuffer[sx] = spPal[pixels[2]]; sx++;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[3]) lineBuffer[sx] = spPal[pixels[3]]; sx++;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[4]) lineBuffer[sx] = spPal[pixels[4]]; sx++;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[5]) lineBuffer[sx] = spPal[pixels[5]]; sx++;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[6]) lineBuffer[sx] = spPal[pixels[6]]; sx++;
+                    if (sx < 256 && (showLeftSprites || sx >= 8) && pixels[7]) lineBuffer[sx] = spPal[pixels[7]];
+                }
             } else {
                 // 背景后精灵: 只在背景透明处渲染
                 for (int bit = 0; bit < 8; bit++) {
                     int sx = x + bit;
+                    if (sx < 8 && !showLeftSprites) continue;
                     if (sx < 256 && pixels[bit] && !bgPixelOpacity[sx]) {
                         lineBuffer[sx] = spPal[pixels[bit]];
                     }
@@ -1391,5 +1438,3 @@ void PPU::loadState(const uint8_t* buf, size_t& offset) {
     loadPaletteCache();
     invalidateTileCache();
 }
-
-

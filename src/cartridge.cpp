@@ -80,7 +80,9 @@ bool Cartridge::load(const char* path) {
     
     // 检查 Mapper 支持
     if (mapper != 0 && mapper != 1 && mapper != 2 && mapper != 3 && mapper != 4) {
-        Serial.printf("  WARNING: Mapper %d not fully supported!\n", mapper);
+        Serial.printf("  ERROR: Mapper %d not supported!\n", mapper);
+        f.close();
+        return false;
     } else {
         const char* mapperNames[] = {"NROM", "MMC1", "UxROM", "CNROM", "MMC3"};
         Serial.printf("  Mapper Name: %s\n", mapperNames[mapper]);
@@ -95,6 +97,11 @@ bool Cartridge::load(const char* path) {
     // 计算实际大小
     prgSize = prgBanks * 0x4000;  // 每个 bank 16KB
     chrSize = chrBanks * 0x2000;  // 每个 bank 8KB
+    if (prgSize == 0) {
+        Serial.println("  ERROR: Invalid ROM, PRG size is zero");
+        f.close();
+        return false;
+    }
 
     // 分配 PRG ROM 内存
     if (prg) {
@@ -113,6 +120,11 @@ bool Cartridge::load(const char* path) {
     memset(prg, 0xFF, prgSize);
     size_t prgRead = f.read(prg, prgSize);
     Serial.printf("  PRG loaded: %d bytes\n", prgRead);
+    if (prgRead != prgSize) {
+        Serial.println("  ERROR: Incomplete PRG ROM data");
+        f.close();
+        return false;
+    }
     
     // 调试：显示 PRG ROM 的开头
     Serial.printf("  First 16 bytes: ");
@@ -152,6 +164,11 @@ bool Cartridge::load(const char* path) {
         if (chr) {
             size_t chrRead = f.read(chr, chrSize);
             Serial.printf("  CHR loaded: %d bytes\n", chrRead);
+            if (chrRead != chrSize) {
+                Serial.println("  ERROR: Incomplete CHR ROM data");
+                f.close();
+                return false;
+            }
             chrWindow = chr;  // 使用 CHR ROM
         } else {
             Serial.println("  WARNING: Failed to allocate CHR ROM, using CHR RAM");
@@ -529,6 +546,12 @@ void Cartridge::cpuWriteMapper2(uint16_t addr, uint8_t val) {
 void Cartridge::cpuWriteMapper3(uint16_t addr, uint8_t val) {
     // CNROM: 选择 CHR bank
     cnromChrBank = val & 0x03;
+    if (chrBanks > 0) {
+        // CNROM only wires as many CHR address lines as the board needs.
+        // Smaller games such as The Legend of Kage have 2 x 8KB CHR banks,
+        // so bank values 2/3 mirror back to 0/1 instead of leaving the old bank.
+        cnromChrBank %= chrBanks;
+    }
     if (chr && chrSize > 0x2000) {
         uint32_t offset = (uint32_t)cnromChrBank * 0x2000;
         if (offset < chrSize) {

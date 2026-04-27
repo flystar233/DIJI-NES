@@ -88,15 +88,20 @@ LGFX tft;
 constexpr int SCREEN_WIDTH  = 256;
 constexpr int SCREEN_HEIGHT = 240;
 constexpr int TFT_OFFSET_X  = (320 - SCREEN_WIDTH) / 2; // 横向居中
+constexpr int OVERSCAN_CROP_X = 4;  // 隐藏 LCD 上可见的横向卷轴边缘接缝
+constexpr int DISPLAY_WIDTH = SCREEN_WIDTH - OVERSCAN_CROP_X * 2;
 // 每个块的行数（用 DMA 一次推多行以减少 setAddrWindow/wait 开销）
 // 8 行 = 30 次 DMA/帧，60 行 = 4 次 DMA/帧，120 行 = 2 次 DMA/帧
 constexpr int BLOCK_LINES = 60;  // 增大到 60 行，240/60=4 次 DMA 每帧
+constexpr int DISPLAY_BLOCK_LINES = (OVERSCAN_CROP_X > 0) ? 16 : BLOCK_LINES;
 
 // FPS 统计变量
 static uint32_t last_emulation_us = 0;  // 最近一次仿真帧耗时（微秒）
 static uint32_t fps_count = 0;          // 已完成的仿真帧计数
 static uint32_t fps_last_ms = 0;        // 上次打印 FPS 的时间戳
 static uint32_t last_dma_us = 0;        // DMA 传输耗时
+static uint32_t game_start_ms = 0;      // 当前游戏启动时间，用于启动失败保护
+static uint32_t last_rendered_ms = 0;   // 最近一次成功入队渲染帧的时间
 
 // Separate SPI bus for SD so it cannot reconfigure/conflict with the TFT SPI bus.
 // If your TFT_eSPI setup uses HSPI, keep SD on FSPI.
@@ -104,6 +109,7 @@ SPIClass sdSPI(FSPI);
 
 // 双缓冲：用于无撕裂推屏
 static uint16_t* frame_buf[2] = {nullptr, nullptr};
+static uint16_t* display_crop_buf = nullptr;
 static volatile uint8_t render_buf_idx = 0;
 // 记录最后一次被显示的缓冲索引（用于在跳帧时复用上一帧以避免闪烁）
 static volatile uint8_t last_displayed_idx = 0;
@@ -124,7 +130,12 @@ const uint32_t FRAME_TIME_US = 16667;  // ~60 FPS (1000000 / 60)
 const int CPU_CYCLES_PER_FRAME = 29780; // NES: 1.79MHz / 60fps ≈ 29780 cycles
 
 // 抽帧开关: true=启用抽帧(性能优先), false=每帧都渲染(画面优先)
+// SMB1 等游戏会用隔帧闪烁表现受伤/无敌，使用奇数周期跳帧避免锁相。
 static bool ENABLE_FRAMESKIP = true;
+static uint64_t next_frame_us = 0;
+static uint8_t force_render_frames = 0;
+static uint8_t consecutive_skipped_frames = 0;
+static uint8_t frameskip_phase = 0;
 
 struct ButtonState {
     uint8_t A = 0;
@@ -150,6 +161,14 @@ bool loadSelectedROM();
 void returnToMainMenu();
 void clearScreenForGame();
 bool tryInitSD();  // 尝试初始化 SD 卡
+
+static void resetFrameScheduler(uint8_t forceRenderFrames = 2) {
+    next_frame_us = 0;
+    force_render_frames = forceRenderFrames;
+    consecutive_skipped_frames = 0;
+    frameskip_phase = 0;
+    nes.requestFrameSkip(false);
+}
 
 // 从 ROM 路径生成 Save State 路径 (将 .nes 替换为 .sav)
 static void getSaveStatePath(char* savePath, size_t maxLen) {
@@ -196,17 +215,22 @@ void initializeScreen() {
             memset(frame_buf[i], 0, SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint16_t));
         }
     }
+
+    display_crop_buf = (uint16_t*)heap_caps_malloc(
+        DISPLAY_WIDTH * DISPLAY_BLOCK_LINES * sizeof(uint16_t),
+        MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL
+    );
 }
 
 // 在 loop() 中调用：检查帧完成并入队
-static void tryEnqueueFrame() {
+static bool tryEnqueueFrame() {
     PPU& ppu = nes.getPPU();
-    if (!ppu.frameReady) return;
+    if (!ppu.frameReady) return false;
 
     // 如果本帧没有渲染（跳帧），不入队，直接清除标志
     if (!ppu.renderedThisFrame) {
         ppu.frameReady = false;
-        return;
+        return false;
     }
 
     uint8_t send_idx = render_buf_idx;
@@ -216,7 +240,10 @@ static void tryEnqueueFrame() {
         render_buf_idx = 1 - render_buf_idx;
         ppu.frameBuffer = frame_buf[render_buf_idx];
         ppu.frameReady = false;
+        last_rendered_ms = millis();
+        return true;
     }
+    return false;
 }
 
 // display_task：只负责 DMA 推送已渲染的帧缓冲
@@ -232,17 +259,34 @@ static void display_task(void* arg) {
         
         tft.startWrite();
         // 分块 DMA 推送（不渲染，直接推送已渲染的缓冲）
-        for (int baseY = 0; baseY < SCREEN_HEIGHT; baseY += BLOCK_LINES) {
+        for (int baseY = 0; baseY < SCREEN_HEIGHT; baseY += DISPLAY_BLOCK_LINES) {
             int h = SCREEN_HEIGHT - baseY;
-            if (h > BLOCK_LINES) h = BLOCK_LINES;
-            tft.setAddrWindow(TFT_OFFSET_X, baseY, SCREEN_WIDTH, h);
-            tft.pushPixelsDMA(buf + baseY * SCREEN_WIDTH, SCREEN_WIDTH * h);
-            tft.waitDMA();
+            if (h > DISPLAY_BLOCK_LINES) h = DISPLAY_BLOCK_LINES;
+            if (display_crop_buf) {
+                for (int row = 0; row < h; row++) {
+                    memcpy(display_crop_buf + row * DISPLAY_WIDTH,
+                           buf + (baseY + row) * SCREEN_WIDTH + OVERSCAN_CROP_X,
+                           DISPLAY_WIDTH * sizeof(uint16_t));
+                }
+                tft.setAddrWindow(TFT_OFFSET_X + OVERSCAN_CROP_X, baseY, DISPLAY_WIDTH, h);
+                tft.pushPixelsDMA(display_crop_buf, DISPLAY_WIDTH * h);
+                tft.waitDMA();
+            } else {
+                for (int row = 0; row < h; row++) {
+                    tft.setAddrWindow(TFT_OFFSET_X + OVERSCAN_CROP_X, baseY + row, DISPLAY_WIDTH, 1);
+                    tft.pushPixelsDMA(buf + (baseY + row) * SCREEN_WIDTH + OVERSCAN_CROP_X, DISPLAY_WIDTH);
+                    tft.waitDMA();
+                }
+            }
         }
         tft.endWrite();
         // 记录最后一次显示的缓冲索引
         last_displayed_idx = buf_idx;
         last_dma_us = micros() - t0;
+
+        // DMA 推屏会在 CPU0 上连续占用较久；明确让出一小段时间，
+        // 避免稳定 60FPS 场景下 IDLE0 长时间得不到运行而触发 task WDT。
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
@@ -280,16 +324,17 @@ void updateButtons() {
 
 // ================ 清除屏幕边缘，进入游戏前调用 ================
 void clearScreenForGame() {
-    // 屏幕 320x240, 游戏区域 256x240 居中显示
-    // 左右各有 TFT_OFFSET_X (32) 像素的边缘需要清除
+    // 屏幕 320x240, 游戏区域居中显示，左右 overscan 裁边保持黑色
     
     // 先停止 DMA，确保不会覆盖我们的清屏操作
     tft.waitDMA();
     
     // 直接清除左右边缘区域（这些区域 DMA 不会触碰）
     tft.startWrite();
-    tft.fillRect(0, 0, TFT_OFFSET_X, 240, TFT_BLACK);  // 左边缘
-    tft.fillRect(TFT_OFFSET_X + SCREEN_WIDTH, 0, TFT_OFFSET_X, 240, TFT_BLACK);  // 右边缘
+    tft.fillRect(0, 0, TFT_OFFSET_X + OVERSCAN_CROP_X, 240, TFT_BLACK);
+    tft.fillRect(TFT_OFFSET_X + OVERSCAN_CROP_X, 0, DISPLAY_WIDTH, 240, TFT_BLACK);
+    tft.fillRect(TFT_OFFSET_X + SCREEN_WIDTH - OVERSCAN_CROP_X, 0,
+                 TFT_OFFSET_X + OVERSCAN_CROP_X, 240, TFT_BLACK);
     tft.endWrite();
     
     // 同时清空帧缓冲区，防止 DMA 任务推送旧数据
@@ -711,6 +756,7 @@ void handlePauseInput() {
         if (pauseMenuIndex == 0) {
             // Continue - 清屏后继续游戏
             clearScreenForGame();
+            resetFrameScheduler(3);
             gameRunning = true;  // 恢复音频
             currentState = STATE_PLAYING;
         } else if (pauseMenuIndex == 1) {
@@ -741,6 +787,7 @@ void handlePauseInput() {
             
             // 返回游戏
             clearScreenForGame();
+            resetFrameScheduler(3);
             gameRunning = true;
             currentState = STATE_PLAYING;
         } else if (pauseMenuIndex == 2) {
@@ -775,6 +822,7 @@ void handlePauseInput() {
             
             // 返回游戏
             clearScreenForGame();
+            resetFrameScheduler(3);
             gameRunning = true;
             currentState = STATE_PLAYING;
         } else {
@@ -792,6 +840,7 @@ void handlePauseInput() {
         }
         delay(50);
         clearScreenForGame();
+        resetFrameScheduler(3);
         gameRunning = true;  // 恢复音频
         currentState = STATE_PLAYING;
         return;
@@ -833,7 +882,9 @@ bool loadSelectedROM() {
         tft.setCursor(40, 130);
         tft.print("Unsupported mapper or bad ROM");
         tft.setCursor(50, 150);
-        tft.print("Only Mapper 0 & 2 supported");
+        tft.print("Supported: Mapper 0-4");
+        tft.setCursor(60, 170);
+        tft.print("Returning to menu...");
         delay(3000);
         tft.fillScreen(MENU_BG_COLOR);
         drawMainMenu();
@@ -852,6 +903,9 @@ bool loadSelectedROM() {
     clearScreenForGame();
     
     // 开始运行游戏并启用音频
+    resetFrameScheduler(3);
+    game_start_ms = millis();
+    last_rendered_ms = 0;
     gameRunning = true;
     Serial.println("ROM loaded successfully");
 
@@ -960,7 +1014,7 @@ void setup() {
     // 创建显示任务在 Core 0
     frame_queue = xQueueCreate(1, sizeof(uint8_t));
     if (frame_queue) {
-        xTaskCreatePinnedToCore(display_task, "Display", 4096, nullptr, 2, nullptr, 0);
+        xTaskCreatePinnedToCore(display_task, "Display", 4096, nullptr, 1, nullptr, 0);
     }
     
     // 显示主菜单
@@ -993,7 +1047,6 @@ void loop() {
     // ===== Anemoia 风格游戏运行逻辑 =====
     // 帧级别调度：目标 60Hz 仿真 (16639µs/帧)
     #define FRAME_TIME_US 16639
-    static uint64_t next_frame = 0;
     static bool pauseKeyReleased = true;  // 暂停组合键是否已释放
 
     // 更新按键输入
@@ -1033,7 +1086,21 @@ void loop() {
     nes.setController(0, controllerState);
 
     // 初始化帧计时
-    if (next_frame == 0) next_frame = esp_timer_get_time();
+    if (next_frame_us == 0) next_frame_us = esp_timer_get_time();
+
+    // 自适应抽帧：只有在主循环已经落后于目标帧节奏时才跳过本帧渲染。
+    int64_t frameLagUs = (int64_t)esp_timer_get_time() - (int64_t)next_frame_us;
+    bool frameskipPhaseAllowsSkip = (frameskip_phase == 0 ||
+                                     frameskip_phase == 2 ||
+                                     frameskip_phase == 4 ||
+                                     frameskip_phase == 6 ||
+                                     frameskip_phase == 8);
+    bool shouldSkipFrame = ENABLE_FRAMESKIP &&
+                           (force_render_frames == 0) &&
+                           (consecutive_skipped_frames == 0) &&
+                           frameskipPhaseAllowsSkip &&
+                           (frameLagUs > (FRAME_TIME_US / 2));
+    nes.requestFrameSkip(shouldSkipFrame);
 
     // 执行一帧
     uint32_t emu0 = micros();
@@ -1043,6 +1110,36 @@ void loop() {
     
     // 入队帧缓冲用于 DMA 显示
     tryEnqueueFrame();
+
+    if (last_rendered_ms == 0 && millis() - game_start_ms > 3500) {
+        gameRunning = false;
+        muteAudio();
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(0xF800);
+        tft.setTextSize(2);
+        tft.setCursor(58, 95);
+        tft.print("Game Start Failed");
+        tft.setTextColor(MENU_HINT_COLOR);
+        tft.setTextSize(1);
+        tft.setCursor(42, 130);
+        tft.print("Unsupported or unstable ROM");
+        tft.setCursor(65, 150);
+        tft.print("Returning to menu...");
+        delay(3000);
+        tft.fillScreen(MENU_BG_COLOR);
+        drawMainMenu();
+        currentState = STATE_MENU;
+        return;
+    }
+
+    if (shouldSkipFrame) {
+        consecutive_skipped_frames++;
+    } else {
+        consecutive_skipped_frames = 0;
+        if (force_render_frames > 0) force_render_frames--;
+    }
+    frameskip_phase++;
+    if (frameskip_phase >= 9) frameskip_phase = 0;
 
     // FPS 统计
     fps_count++;
@@ -1057,9 +1154,9 @@ void loop() {
 
     // 帧限制
     uint64_t now = esp_timer_get_time();
-    if (now < next_frame) {
-        ets_delay_us(next_frame - now);
+    if (now < next_frame_us) {
+        ets_delay_us(next_frame_us - now);
     }
-    next_frame += FRAME_TIME_US;
+    next_frame_us += FRAME_TIME_US;
     #undef FRAME_TIME_US
 }
