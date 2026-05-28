@@ -535,10 +535,13 @@ void Cartridge::cpuWriteMapper1(uint16_t addr, uint8_t val) {
 
 void Cartridge::cpuWriteMapper2(uint16_t addr, uint8_t val) {
     // UxROM: 写入任何 $8000-$FFFF 地址都会设置 bank
-    uint8_t newBank = val & 0x0F;
-    if (newBank >= prgBanks) {
-        newBank = prgBanks - 1;
-    }
+    // 官方 UNROM/UOROM 板通常有 bus conflict，mapper 实际看到的是 CPU 写入值
+    // 与当前 PRG ROM 总线值的按位与。Konami 的 Jackal 属于这类常规 UxROM。
+    val &= cpuReadMapper2(addr);
+
+    // UNROM(128KB) 通常只有 3 条 bank select 线，UOROM(256KB) 才使用 4 条。
+    // 超出实际 bank 数的值应镜像回有效范围，不能全部夹到最后一个 bank。
+    uint8_t newBank = (val & 0x0F) % prgBanks;
     prgBankSelect = newBank;
     updateBankCache();
 }

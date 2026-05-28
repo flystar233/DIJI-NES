@@ -12,6 +12,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [v0.4.0] - 2026-05-28
+
+### 新增
+
+- ROM 浏览菜单支持 UTF-8 中文文件名显示，中文 ROM 名称会使用中文字体并按像素宽度安全截断。
+- PlatformIO 构建默认启用 ESP32-S3 USB CDC，便于通过板载 USB 口烧录程序和查看串口日志。
+
+### Added
+
+- ROM browser now supports UTF-8 Chinese filenames, using a Chinese-capable font and pixel-width-safe truncation.
+- PlatformIO builds now enable ESP32-S3 USB CDC by default for flashing and serial logs through the board's native USB port.
+
+### 修复
+
+- 修复 Mapper 2 / UxROM 游戏《赤色要塞 / Jackal (USA)》启动后黑屏的问题。
+- 修复帧级调度下 VBlank 起点立即触发 NMI，导致同时轮询 `$2002` 的游戏看不到 VBlank 标志的问题。
+- 改善 Mapper 2 PRG bank 选择：支持按实际 PRG bank 数镜像，并模拟常规 UxROM bus conflict 行为。
+
+### Fixed
+
+- Fixed black screen on Mapper 2 / UxROM title Jackal (USA).
+- Fixed a frame-scheduler VBlank/NMI race where games polling `$2002` could miss the VBlank flag when the NMI handler read `$2002` first.
+- Improved Mapper 2 PRG bank selection with actual-bank mirroring and common UxROM bus-conflict behavior.
+
+### 说明
+
+- 引入中文字体后，app 固件体积约为 797 KB；静态 RAM 使用仍约 52 KB。
+- 感谢 [k7212519](https://github.com/k7212519) 贡献中文 ROM 文件名显示支持。
+
+### Notes
+
+- With the Chinese font included, the app firmware is about 797 KB; static RAM usage remains about 52 KB.
+- Thanks to [k7212519](https://github.com/k7212519) for contributing Chinese ROM filename display support.
+
+---
+
 ## [v0.3.0] - 2026-04-26
 
 ### 修复

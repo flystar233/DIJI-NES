@@ -261,10 +261,15 @@ void IRAM_ATTR NES::clock() {
     
     // 扫描线 241-260: VBlank
     ppu.setVBlank(true);
+    // 帧级调度在 VBlank 起点是粗粒度的。如果立即触发 NMI，像 Jackal
+    // 这种同时轮询 $2002 且 NMI handler 也读取 $2002 的游戏会被 NMI
+    // 先清掉 VBlank 标志，主循环永远看不到 bit7。给 CPU 一个很小的
+    // 可见窗口，让轮询循环能按实际硬件竞态继续前进。
+    cpu.clock(32);
     if (ppu.nmiEnabled()) {
         cpu.nmi();
     }
-    cpu.clock(2274);  // VBlank 期间的 CPU 周期 (20 scanlines × ~113.67)
+    cpu.clock(2242);  // VBlank 期间的 CPU 周期 (20 scanlines × ~113.67)
     
     // 扫描线 261: Pre-render
     ppu.setVBlank(false);

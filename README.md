@@ -33,8 +33,9 @@ A NES (Nintendo Entertainment System) emulator running on ESP32-S3 microcontroll
 - **接近 60 FPS** - 大部分游戏约 57-61 FPS，重精灵场景约 55-58 FPS
 - **Mapper 支持** - NROM, MMC1, UxROM, CNROM, MMC3
 - **存档功能** - 快速存档/读档到 SD 卡
-- **菜单系统** - ROM 浏览器、暂停菜单、无 SD 卡时提示界面
+- **菜单系统** - ROM 浏览器、暂停菜单、无 SD 卡时提示界面，支持 UTF-8 中文 ROM 文件名显示
 - **友好失败提示** - 不支持的 Mapper 或异常 ROM 会提示后返回主菜单
+- **USB CDC 烧录** - ESP32-S3 原生 USB CDC 默认启用，方便通过板载 USB 口烧录和查看串口日志
 
 ## Features
 
@@ -45,8 +46,9 @@ A NES (Nintendo Entertainment System) emulator running on ESP32-S3 microcontroll
 - **Near 60 FPS** - Most games run around 57-61 FPS; object-heavy scenes are around 55-58 FPS
 - **Mapper support** - NROM, MMC1, UxROM, CNROM, MMC3
 - **Save states** - Quick save/load to SD card
-- **Menu system** - ROM browser, pause menu, and no-SD-card prompt
+- **Menu system** - ROM browser, pause menu, no-SD-card prompt, and UTF-8 Chinese ROM filename display
 - **Friendly failure messages** - Unsupported mappers or invalid ROMs show a message and return to the main menu
+- **USB CDC flashing** - ESP32-S3 native USB CDC is enabled by default for flashing and serial logs through the board USB port
 
 ---
 
@@ -63,7 +65,7 @@ A NES (Nintendo Entertainment System) emulator running on ESP32-S3 microcontroll
 
 ### 项目状态
 
-本项目已支持 **NES 前期、中期及大部分后期游戏**，包括依赖 MMC3 扫描线 IRQ 的游戏（如超级马里奥 3）。
+本项目已支持 **NES 前期、中期及大部分后期游戏**，包括依赖 MMC3 扫描线 IRQ 的游戏（如超级马里奥 3），以及常见 UxROM/CHR RAM 游戏（如《赤色要塞 / Jackal》）。
 
 少数非标准时序、特殊 mapper 或盗版/改版 mapper 变体的游戏可能仍有兼容性问题。对于明确不支持的 mapper 或异常 ROM，系统会显示提示并返回主菜单。
 
@@ -79,7 +81,7 @@ A NES (Nintendo Entertainment System) emulator running on ESP32-S3 microcontroll
 
 ### Project Status
 
-This emulator now supports **early-, mid-, and most late-era NES titles**, including games that rely on **MMC3 scanline IRQ timing** (e.g., Super Mario Bros. 3).
+This emulator now supports **early-, mid-, and most late-era NES titles**, including games that rely on **MMC3 scanline IRQ timing** (e.g., Super Mario Bros. 3) and common UxROM/CHR RAM titles such as Jackal.
 
 A small number of games with non-standard timing, special mappers, or bootleg mapper variants may still have compatibility issues. Clearly unsupported mappers or invalid ROMs will show an error message and return to the main menu.
 
@@ -91,10 +93,12 @@ A small number of games with non-standard timing, special mappers, or bootleg ma
 |------------|---------------|
 | 模拟 FPS   | 大部分游戏约 57-61 FPS；重精灵场景约 55-58 FPS |
 | 音频采样率 | 44100 Hz      |
-| Flash 使用 | ~490 KB (7.5%) |
+| Flash 使用 | ~797 KB app 固件 (约 12.2% app 分区) |
 | RAM 使用   | ~52 KB (16%)  |
 
-> 注：v0.3.0 优先保证精灵显示正确性与横向卷轴边缘稳定性。相比最激进的固定隔帧跳帧方案，部分场景可能低约 1 FPS，但可避免《超级马里奥兄弟》等游戏在受伤/闪烁阶段出现角色消失。
+> 注：v0.4.0 包含中文 ROM 文件名字体，因此 Flash 占用高于 v0.3.0；静态 RAM 占用基本不变。
+>
+> v0.3.0 起优先保证精灵显示正确性与横向卷轴边缘稳定性。相比最激进的固定隔帧跳帧方案，部分场景可能低约 1 FPS，但可避免《超级马里奥兄弟》等游戏在受伤/闪烁阶段出现角色消失。
 >
 > Display 任务会在每帧 DMA 后主动让出时间片以避免 task watchdog 重启，因此部分场景的 DMA 统计值可能略高，但整体 FPS 通常仍保持接近 60。
 
@@ -104,10 +108,12 @@ A small number of games with non-standard timing, special mappers, or bootleg ma
 |--------|-------|
 | Emulation FPS | Most games around 57-61 FPS; object-heavy scenes around 55-58 FPS |
 | Audio sample rate | 44100 Hz |
-| Flash usage | ~490 KB (7.5%) |
+| Flash usage | ~797 KB app firmware (about 12.2% of the app partition) |
 | RAM usage | ~52 KB (16%) |
 
-> Note: v0.3.0 prioritizes sprite correctness and stable horizontal scrolling edges. Compared with the most aggressive fixed frame-skip mode, some scenes may be about 1 FPS slower, but this avoids disappearing sprites during damage/blinking effects in games such as Super Mario Bros.
+> Note: v0.4.0 includes a Chinese-capable ROM filename font, so Flash usage is higher than v0.3.0; static RAM usage is mostly unchanged.
+>
+> Since v0.3.0, the emulator prioritizes sprite correctness and stable horizontal scrolling edges. Compared with the most aggressive fixed frame-skip mode, some scenes may be about 1 FPS slower, but this avoids disappearing sprites during damage/blinking effects in games such as Super Mario Bros.
 >
 > The Display task yields after each frame DMA to avoid task watchdog resets. DMA timing may be slightly higher in some scenes, while overall FPS usually remains close to 60.
 
@@ -261,7 +267,7 @@ If you encounter these problems, try modifying the following setting in lgfx_con
 
 为方便直接烧录，仓库根目录提供了预编译合并固件：
 
-- [firmware/DIJI-NES_v0.3.0.bin](firmware/DIJI-NES_v0.3.0.bin)
+- [firmware/DIJI-NES_v0.4.0.bin](firmware/DIJI-NES_v0.4.0.bin)
 
 该文件已合并 **bootloader + partitions + boot_app0 + app firmware**，可直接按地址 **0x0** 烧录。
 
@@ -269,7 +275,7 @@ If you encounter these problems, try modifying the following setting in lgfx_con
 
 For convenience, a prebuilt merged firmware image is included in the repository root:
 
-- [firmware/DIJI-NES_v0.3.0.bin](firmware/DIJI-NES_v0.3.0.bin)
+- [firmware/DIJI-NES_v0.4.0.bin](firmware/DIJI-NES_v0.4.0.bin)
 
 This image already contains the **bootloader + partitions + boot_app0 + application firmware**, so it can be flashed directly to address **0x0**.
 
@@ -282,12 +288,16 @@ This image already contains the **bootloader + partitions + boot_app0 + applicat
 3. 选择正确的 ESP32-S3 串口设备
 4. 点击 PlatformIO 的 **Upload** 按钮进行编译并烧录
 
+> v0.4.0 起 `platformio.ini` 默认启用 `ARDUINO_USB_MODE=1` 和 `ARDUINO_USB_CDC_ON_BOOT=1`，可直接通过 ESP32-S3 原生 USB CDC 端口烧录和监视串口输出。
+
 ### Option 1: Using PlatformIO (Recommended)
 
 1. Open this project folder in **VS Code**
 2. PlatformIO will automatically detect the project and install the required toolchain
 3. Select the correct serial port for your ESP32-S3 board
 4. Click **Upload** in PlatformIO to build and flash the firmware
+
+> Since v0.4.0, `platformio.ini` enables `ARDUINO_USB_MODE=1` and `ARDUINO_USB_CDC_ON_BOOT=1` by default, allowing flashing and serial monitoring through the ESP32-S3 native USB CDC port.
 
 ---
 
@@ -303,7 +313,7 @@ This image already contains the **bootloader + partitions + boot_app0 + applicat
      <img src="./images/DIJI-NES_flash-download.png" alt="Flash Download Tool Example" width="80%">
    </p>
 
-3. 选择仓库中的合并固件文件 [firmware/DIJI-NES_v0.3.0.bin](firmware/DIJI-NES_v0.3.0.bin)，烧录地址填写 **0x0**。
+3. 选择仓库中的合并固件文件 [firmware/DIJI-NES_v0.4.0.bin](firmware/DIJI-NES_v0.4.0.bin)，烧录地址填写 **0x0**。
 4. 确认设备串口连接正常后，点击 **START** 开始烧录。
 5. 烧录完成后重启设备，即可进入 DIJI-NES。
 
@@ -319,7 +329,7 @@ Download: <https://docs.espressif.com/projects/esp-test-tools/zh_CN/latest/esp32
      <img src="./images/DIJI-NES_flash-download.png" alt="Flash Download Tool Example" width="80%">
    </p>
 
-3. Select the merged firmware file [firmware/DIJI-NES_v0.3.0.bin](firmware/DIJI-NES_v0.3.0.bin) from this repository and set the flash address to **0x0**.
+3. Select the merged firmware file [firmware/DIJI-NES_v0.4.0.bin](firmware/DIJI-NES_v0.4.0.bin) from this repository and set the flash address to **0x0**.
 4. After confirming the serial port is connected correctly, click **START** to begin flashing.
 5. Reboot the device after flashing completes to start DIJI-NES.
 
@@ -466,7 +476,7 @@ This information is based on community feedback and troubleshooting experience.
 注意：本项目不包含、提供或分发任何游戏 ROM。所有 ROM 均为版权所有，属于各自权利人。
 本项目仅供技术学习与研究使用。作者不对用户如何获取或使用 ROM 文件承担任何责任。
 
-1. **准备 ROM 文件**: 将 `.nes` ROM 文件复制到 SD 卡根目录
+1. **准备 ROM 文件**: 将 `.nes` ROM 文件复制到 SD 卡根目录（支持 UTF-8 中文文件名）
 2. **插入 SD 卡**
 3. **开机**: 设备会显示 ROM 浏览菜单
 4. **选择游戏**: 
@@ -480,7 +490,7 @@ This information is based on community feedback and troubleshooting experience.
 This project does NOT include, provide, or distribute any game ROMs. All ROMs are copyrighted and remain the property of their respective owners.
 This project is intended solely for technical learning and research. The author assumes no responsibility for how users obtain or use ROM files.
 
-1. **Prepare ROM files**: Copy `.nes` ROM files to the root directory of the SD card
+1. **Prepare ROM files**: Copy `.nes` ROM files to the root directory of the SD card (UTF-8 Chinese filenames are supported)
 2. **Insert the SD card**
 3. **Power on**: The device will show the ROM browser menu
 4. **Select a game**:
@@ -497,7 +507,8 @@ This project is intended solely for technical learning and research. The author 
 DiJi-NES/
 ├── firmware/
 │   ├── DIJI-NES_v0.2.1.bin # 旧版预编译合并固件
-│   └── DIJI-NES_v0.3.0.bin # 当前预编译合并固件，可直接烧录到 0x0
+│   ├── DIJI-NES_v0.3.0.bin # 旧版预编译合并固件
+│   └── DIJI-NES_v0.4.0.bin # 当前预编译合并固件，可直接烧录到 0x0
 ├── src/
 │   ├── main.cpp        # 入口、硬件初始化、主循环
 │   ├── nes.h/.cpp      # NES 系统总线、内存映射
@@ -506,8 +517,7 @@ DiJi-NES/
 │   ├── apu.h/.cpp      # APU 音频处理器
 │   ├── cartridge.h/.cpp # ROM 加载、Mapper 实现
 │   └── lgfx_conf.h     # LovyanGFX 显示配置
-├── platformio.ini      # PlatformIO 配置
-└── Makefile            # 快捷编译命令
+└── platformio.ini      # PlatformIO 配置
 ```
 
 ## Project Structure
@@ -516,7 +526,8 @@ DiJi-NES/
 DiJi-NES/
 ├── firmware/
 │   ├── DIJI-NES_v0.2.1.bin # Previous prebuilt merged firmware
-│   └── DIJI-NES_v0.3.0.bin # Current prebuilt merged firmware, flashable at 0x0
+│   ├── DIJI-NES_v0.3.0.bin # Previous prebuilt merged firmware
+│   └── DIJI-NES_v0.4.0.bin # Current prebuilt merged firmware, flashable at 0x0
 ├── src/
 │   ├── main.cpp        # Entry point, hardware init, main loop
 │   ├── nes.h/.cpp      # NES system bus and memory map
@@ -525,8 +536,7 @@ DiJi-NES/
 │   ├── apu.h/.cpp      # APU audio processor
 │   ├── cartridge.h/.cpp # ROM loading and mapper implementation
 │   └── lgfx_conf.h     # LovyanGFX display configuration
-├── platformio.ini      # PlatformIO configuration
-└── Makefile            # Convenience build commands
+└── platformio.ini      # PlatformIO configuration
 ```
 
 ---
@@ -538,6 +548,7 @@ DiJi-NES/
 - [Anemoia-ESP32](https://github.com/Shim06/Anemoia-ESP32) - APU 时钟同步策略、帧级调度设计
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX) - 显示库
 - [NESdev Wiki](https://www.nesdev.org/wiki/) - NES 硬件文档
+- [k7212519](https://github.com/k7212519) - 贡献 UTF-8 中文 ROM 文件名显示支持
 
 特别感谢 Anemoia-ESP32 项目，本项目的 帧级调度设计 和 APU 独立核心运行 + I2S 阻塞同步的设计思路来源于此。
 
@@ -548,6 +559,7 @@ This project references ideas and implementation details from:
 - [Anemoia-ESP32](https://github.com/Shim06/Anemoia-ESP32) - APU clock synchronization strategy and frame-level scheduling design
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX) - Display library
 - [NESdev Wiki](https://www.nesdev.org/wiki/) - NES hardware documentation
+- [k7212519](https://github.com/k7212519) - Contributed UTF-8 Chinese ROM filename display support
 
 Special thanks to Anemoia-ESP32. DIJI-NES's frame-level scheduling design and the APU-on-dedicated-core + I2S blocking synchronization approach were inspired by that project.
 

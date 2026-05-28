@@ -252,5 +252,3 @@ public:
     void loadState(const uint8_t* buf, size_t& offset);
     size_t getStateSize() const;
 };
-
-
