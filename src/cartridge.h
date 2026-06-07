@@ -40,8 +40,7 @@ public:
     // IRQ 接口 (用于 MMC3)
     bool irqPending() const { return mmc3IrqPending; }
     void acknowledgeIrq() { mmc3IrqPending = false; }
-    void IRAM_ATTR clockIrqCounter();  // 每条扫描线调用
-    void IRAM_ATTR ppuScanline();      // 简化的扫描线 IRQ 触发 (Anemoia 风格)
+    void IRAM_ATTR clockIrqCounter();  // 每条扫描线调用 (A12 上升沿等效)
 
     // 绑定 NES 实例（用于在 MMC3 IRQ 触发时调用 CPU IRQ）
     void setNES(NES* n) { nes = n; }

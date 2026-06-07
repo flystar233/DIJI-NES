@@ -67,8 +67,8 @@ static const unsigned long BUTTON_DEBOUNCE = 200;  // 200ms防抖
 #define SD_FREQ       10000000  // 10 MHz
 
 // 游戏控制器按键
-#define A_BUTTON      48
-#define B_BUTTON      47
+#define A_BUTTON      47
+#define B_BUTTON      21
 #define LEFT_BUTTON   8
 #define RIGHT_BUTTON  18
 #define UP_BUTTON     17
@@ -181,14 +181,10 @@ static void getSaveStatePath(char* savePath, size_t maxLen) {
     strncpy(savePath, romPath, maxLen - 1);
     savePath[maxLen - 1] = '\0';
     
-    // 查找最后一个 '.' 并替换扩展名
+    // 截断扩展名并用 snprintf 安全追加 .sav
     char* dot = strrchr(savePath, '.');
-    if (dot && (dot - savePath + 5) < (int)maxLen) {
-        strcpy(dot, ".sav");
-    } else {
-        // 没有扩展名，直接追加
-        strncat(savePath, ".sav", maxLen - strlen(savePath) - 1);
-    }
+    if (dot) *dot = '\0';
+    snprintf(savePath + strlen(savePath), maxLen - strlen(savePath), ".sav");
 }
 
 // ================ 初始化函数 ================
@@ -590,6 +586,7 @@ void drawMainMenu() {
 
 // ================ 暂停菜单绘制 ================
 void drawPauseMenu() {
+    tft.waitDMA();  // 避免与 display_task DMA 传输冲突
     // 在游戏画面上绘制半透明遮罩
     // 由于硬件限制，我们用条纹效果模拟半透明
     for (int y = 0; y < 240; y += 2) {
@@ -709,6 +706,7 @@ void handleMenuInput() {
 
 // ================ 绘制菜单列表区域（局部刷新） ================
 void drawMenuList() {
+    tft.waitDMA();  // 避免与 display_task DMA 传输冲突
     int listStartY = 44;
     int itemHeight = 20;
     int listWidth = 280;

@@ -436,23 +436,20 @@ void APU::clock() {
     if (pulse_hz > THRESHOLD) {
         pulse_hz -= THRESHOLD;
         
-        // 获取各通道输出并混合 (类似 Anemoia 的简化混合)
+        // 获取各通道输出并混合
         uint16_t sample = 0;
-        
+
         // Pulse 1
-        if (pulse[0].lengthCounter > 0 && pulse[0].output() > 0) {
-            sample += pulse[0].volume;
-        }
+        uint8_t p1 = pulse[0].output();
+        if (p1 > 0) sample += p1;
         // Pulse 2
-        if (pulse[1].lengthCounter > 0 && pulse[1].output() > 0) {
-            sample += pulse[1].volume;
-        }
+        uint8_t p2 = pulse[1].output();
+        if (p2 > 0) sample += p2;
         // Triangle
         sample += triangle.output();
         // Noise
-        if (noise.lengthCounter > 0 && !(noise.shiftRegister & 0x01)) {
-            sample += noise.volume;
-        }
+        uint8_t ns = noise.output();
+        if (ns > 0) sample += ns;
         
         // 限制最大值并转换为 16-bit 音量
         if (sample > 255) sample = 255;

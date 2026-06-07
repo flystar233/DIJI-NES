@@ -521,7 +521,7 @@ uint8_t IRAM_ATTR CPU6502::step() {
     // ==================== Stack ====================
     case 0x48: push(A); break;                                    // PHA
     case 0x68: A = pop(); updateZNFlags(A); break;                // PLA
-    case 0x08: push(P | 0x10); break;                             // PHP (B flag set)
+    case 0x08: push(P | 0x30); break;                             // PHP (B flag + bit 5)
     case 0x28: P = (pop() & 0xEF) | 0x20; break;                  // PLP (ignore B, set bit 5)
 
     // ==================== Register Transfers ====================
@@ -545,7 +545,7 @@ uint8_t IRAM_ATTR CPU6502::step() {
     case 0x00: { // BRK
         PC++;
         pushWord(PC);
-        push(P | 0x10);  // B flag set
+        push(P | 0x30);  // B flag + bit 5 (real 6502)
         setFlag(FLAG_I, true);
         PC = read(0xFFFE) | (read(0xFFFF) << 8);
         break;

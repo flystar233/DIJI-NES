@@ -856,25 +856,6 @@ void Cartridge::clockIrqCounter() {
     }
 }
 
-/**
- * 简化的 PPU scanline 回调 (Anemoia 风格)
- * 每条可见扫描线结束时调用
- * 不依赖 A12 检测，直接使用扫描线计数
- */
-void IRAM_ATTR Cartridge::ppuScanline() {
-    if (mapper != 4) return;  // 只有 MMC3 需要处理
-    
-    // Anemoia 风格的简化 IRQ 逻辑
-    if (mmc3IrqCounter == 0) {
-        mmc3IrqCounter = mmc3IrqLatch;
-    } else {
-        mmc3IrqCounter--;
-        if (mmc3IrqCounter == 0 && mmc3IrqEnabled) {
-            mmc3IrqPending = true;
-        }
-    }
-}
-
 // ============================================================================
 // Save State
 // ============================================================================

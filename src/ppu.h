@@ -122,8 +122,9 @@ public:
     bool renderedThisFrame = false;
     
     // 获取当前扫描线 (用于同步)
-    int getCurrentScanline() const { return scanline; }
-    int getCurrentDot() const { return dot; }
+    // 返回 ppuScanline/ppuCycle 以与 advanceCycles() 保持同步
+    int getCurrentScanline() const { return ppuScanline; }
+    int getCurrentDot() const { return ppuCycle; }
     
     // 设置当前扫描线和点 (用于帧级调度模式)
     void setScanline(int sl) { scanline = sl; }

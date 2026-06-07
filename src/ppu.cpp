@@ -1019,7 +1019,13 @@ void PPU::render(uint16_t* fb) {
 
     // ========== 1. 加载调色板缓存 ==========
     loadPaletteCache();
-    
+
+    // 同步 VRAM 地址并预评估 OAM (与 renderLine 中 scanline==0 逻辑一致)
+    if (ppuMask & 0x18) {
+        vramAddr = tempAddr;
+    }
+    evaluateOAM();
+
     // ========== 2. 填充背景色 ==========
     uint16_t bgColor = bgPaletteCache[0];
     
